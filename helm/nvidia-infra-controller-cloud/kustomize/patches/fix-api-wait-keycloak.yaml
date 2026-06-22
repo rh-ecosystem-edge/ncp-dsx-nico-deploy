@@ -3,6 +3,7 @@
 #
 # Wait for Keycloak OIDC discovery endpoint before starting the API.
 # The API fetches JWKS at startup and skips Keycloak auth if it fails.
+# Uses -k since the init container runs before the CA bundle is built.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,7 +19,7 @@ spec:
             - -c
             - |
               echo "Waiting for Keycloak OIDC endpoint..."
-              until curl -sf http://keycloak.nvidia-infra-controller-keycloak:8080/realms/nico-dev/.well-known/openid-configuration > /dev/null 2>&1; do
+              until curl -skf https://keycloak-service.rhbk-operator:8443/realms/nico-dev/.well-known/openid-configuration > /dev/null 2>&1; do
                 sleep 5
               done
               echo "Keycloak ready"

@@ -7,27 +7,13 @@
 
 keycloakInstance:
   enabled: true
-  namespace: nvidia-infra-controller-keycloak
-  image:
-    repository: quay.io/keycloak/keycloak
-    tag: "26.0"
-    pullPolicy: IfNotPresent
+  namespace: rhbk-operator
   admin:
     username: admin
     password: admin
-  service:
-    type: ClusterIP
-    port: 8080
   postgresql:
     storage:
       size: 1Gi
-  resources:
-    requests:
-      memory: "512Mi"
-      cpu: "250m"
-    limits:
-      memory: "3Gi"
-      cpu: "2000m"
 
 # =============================================================================
 # Temporal — official chart (https://go.temporal.io/helm-charts) v1.2.0
@@ -337,8 +323,8 @@ nico-rest-api:
     issuers: []
     keycloak:
       enabled: true
-      baseURL: "http://keycloak.nvidia-infra-controller-keycloak:8080"
-      externalBaseURL: "https://keycloak-nvidia-infra-controller-keycloak.apps-crc.testing"
+      baseURL: "https://keycloak-service.rhbk-operator:8443"
+      externalBaseURL: ""
       realm: "nico-dev"
       clientID: "nico-api"
       clientSecretPath: /var/secrets/keycloak/client-secret

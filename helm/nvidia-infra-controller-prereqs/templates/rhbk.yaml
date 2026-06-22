@@ -10,7 +10,6 @@ metadata:
   name: {{ .Values.rhbk.namespace }}
   labels:
     {{- include "nvidia-infra-controller-prereqs.labels" . | nindent 4 }}
-  annotations:
 ---
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup

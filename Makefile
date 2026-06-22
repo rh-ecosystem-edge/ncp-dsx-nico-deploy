@@ -12,6 +12,9 @@ IMAGE_REGISTRY ?= quay.io/fdupont-redhat
 IMAGE_TAG ?= latest
 DOCKERFILE_DIR := docker/ubi
 
+# Cluster ingress domain (auto-detected from OpenShift)
+CLUSTER_DOMAIN ?= $(shell oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+
 # Post-renderer for Kustomize patches
 POST_RENDERER := kustomize-spiffe
 CLOUD_KUSTOMIZE := $(CURDIR)/helm/nvidia-infra-controller-cloud/kustomize
@@ -82,6 +85,7 @@ deploy-cloud: helm-dep-build
 	helm upgrade --install -n nvidia-infra-controller-cloud nvidia-infra-controller-cloud \
 		helm/nvidia-infra-controller-cloud/ \
 		--create-namespace --wait --timeout 15m \
+		--set nico-rest-api.config.keycloak.externalBaseURL=https://keycloak-rhbk-operator.$(CLUSTER_DOMAIN) \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(CLOUD_KUSTOMIZE)
 
 deploy-site: helm-dep-build

@@ -23,8 +23,9 @@ make deploy-cloud
 ### 3. Register a Site
 
 ```bash
-KC_URL="https://keycloak-nvidia-infra-controller-keycloak.apps-crc.testing"
-API_URL="https://nico-rest-api-nvidia-infra-controller-cloud.apps-crc.testing"
+DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
+KC_URL="https://keycloak-rhbk-operator.${DOMAIN}"
+API_URL="https://nico-rest-api-nvidia-infra-controller-cloud.${DOMAIN}"
 
 TOKEN=$(curl -sk -X POST "$KC_URL/realms/nico-dev/protocol/openid-connect/token" \
   -d "grant_type=password" \

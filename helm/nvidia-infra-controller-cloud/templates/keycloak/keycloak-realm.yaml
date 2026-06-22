@@ -1,237 +1,330 @@
 {{- if .Values.keycloakInstance.enabled }}
-apiVersion: v1
-kind: ConfigMap
+apiVersion: k8s.keycloak.org/v2beta1
+kind: KeycloakRealmImport
 metadata:
-  name: keycloak-realm
+  name: nico-dev-realm
   namespace: {{ .Values.keycloakInstance.namespace }}
   labels:
-    app: keycloak
-data:
-  nico-dev-realm.json: |
-    {
-      "realm": "nico-dev",
-      "enabled": true,
-      "displayName": "NICo Development",
-      "sslRequired": "none",
-      "registrationAllowed": false,
-      "loginWithEmailAllowed": true,
-      "duplicateEmailsAllowed": false,
-      "resetPasswordAllowed": true,
-      "editUsernameAllowed": false,
-      "bruteForceProtected": true,
-      "roles": {
-        "realm": [
-          { "name": "test-org:PROVIDER_ADMIN", "description": "Provider Admin role for test-org" },
-          { "name": "test-org:TENANT_ADMIN", "description": "Tenant Admin role for test-org" },
-          { "name": "test-org:PROVIDER_VIEWER", "description": "Provider Viewer role for test-org" },
-          { "name": "admin", "description": "Administrator role" },
-          { "name": "user", "description": "Regular user role" }
-        ],
-        "client": {
-          "nico-api": [
-            { "name": "api-access", "description": "Access to NICo API" }
-          ]
-        }
-      },
-      "clients": [
-        {
-          "clientId": "nico-api",
-          "name": "NICo API",
-          "enabled": true,
-          "clientAuthenticatorType": "client-secret",
-          "secret": "nico-local-secret",
-          "redirectUris": [
-            "http://localhost:9388/*",
-            "http://localhost:3000/*"
-          ],
-          "webOrigins": [
-            "http://localhost:9388",
-            "http://localhost:3000"
-          ],
-          "publicClient": false,
-          "protocol": "openid-connect",
-          "directAccessGrantsEnabled": true,
-          "serviceAccountsEnabled": true,
-          "authorizationServicesEnabled": false,
-          "standardFlowEnabled": true,
-          "implicitFlowEnabled": false,
-          "fullScopeAllowed": true,
-          "defaultClientScopes": ["basic", "web-origins", "acr", "profile", "roles", "email"],
-          "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"],
-          "protocolMappers": [
-            {
-              "name": "audience",
-              "protocol": "openid-connect",
-              "protocolMapper": "oidc-audience-mapper",
-              "consentRequired": false,
-              "config": {
-                "included.client.audience": "nico-api",
-                "id.token.claim": "true",
-                "access.token.claim": "true"
-              }
-            },
-            {
-              "name": "oidc_id",
-              "protocol": "openid-connect",
-              "protocolMapper": "oidc-usermodel-attribute-mapper",
-              "consentRequired": false,
-              "config": {
-                "user.attribute": "oidc_id",
-                "claim.name": "oidc_id",
-                "jsonType.label": "String",
-                "id.token.claim": "true",
-                "access.token.claim": "true",
-                "userinfo.token.claim": "true"
-              }
-            }
-          ]
-        }
-      ],
-      "users": [
-        {
-          "username": "testuser",
-          "email": "testuser@example.com",
-          "emailVerified": true,
-          "enabled": true,
-          "firstName": "Test",
-          "lastName": "User",
-          "credentials": [{ "type": "password", "value": "testpassword", "temporary": false }],
-          "realmRoles": ["user", "test-org:TENANT_ADMIN"],
-          "clientRoles": { "nico-api": ["api-access"] },
-          "attributes": { "oidc_id": ["testuser-oidc-001"] }
-        },
-        {
-          "username": "admin",
-          "email": "admin@example.com",
-          "emailVerified": true,
-          "enabled": true,
-          "firstName": "Admin",
-          "lastName": "User",
-          "credentials": [{ "type": "password", "value": "adminpassword", "temporary": false }],
-          "realmRoles": ["admin", "user", "test-org:PROVIDER_ADMIN", "test-org:TENANT_ADMIN"],
-          "clientRoles": { "nico-api": ["api-access"] },
-          "attributes": { "oidc_id": ["admin-oidc-001"] }
-        },
-        {
-          "username": "provider",
-          "email": "provider@example.com",
-          "emailVerified": true,
-          "enabled": true,
-          "firstName": "Provider",
-          "lastName": "Admin",
-          "credentials": [{ "type": "password", "value": "providerpassword", "temporary": false }],
-          "realmRoles": ["user", "test-org:PROVIDER_ADMIN"],
-          "clientRoles": { "nico-api": ["api-access"] },
-          "attributes": { "oidc_id": ["provider-oidc-001"] }
-        }
-      ],
-      "clientScopes": [
-        {
-          "name": "basic",
-          "description": "OpenID Connect scope for add all basic claims to the token",
-          "protocol": "openid-connect",
-          "attributes": {
-            "include.in.token.scope": "false",
-            "display.on.consent.screen": "false"
-          },
-          "protocolMappers": [
-            {
-              "name": "sub",
-              "protocol": "openid-connect",
-              "protocolMapper": "oidc-sub-mapper",
-              "consentRequired": false,
-              "config": {
-                "introspection.token.claim": "true",
-                "access.token.claim": "true",
-                "add.to.lightweight.access.token": "true"
-              }
-            }
-          ]
-        },
-        {
-          "name": "profile",
-          "description": "OpenID Connect built-in scope: profile",
-          "protocol": "openid-connect",
-          "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "true" },
-          "protocolMappers": [
-            { "name": "username", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-attribute-mapper", "config": { "user.attribute": "username", "claim.name": "preferred_username", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true", "jsonType.label": "String" } },
-            { "name": "full name", "protocol": "openid-connect", "protocolMapper": "oidc-full-name-mapper", "config": { "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true" } }
-          ]
-        },
-        {
-          "name": "email",
-          "description": "OpenID Connect built-in scope: email",
-          "protocol": "openid-connect",
-          "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "true" },
-          "protocolMappers": [
-            { "name": "email", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-attribute-mapper", "config": { "user.attribute": "email", "claim.name": "email", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true", "jsonType.label": "String" } },
-            { "name": "email verified", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-attribute-mapper", "config": { "user.attribute": "emailVerified", "claim.name": "email_verified", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true", "jsonType.label": "boolean" } }
-          ]
-        },
-        {
-          "name": "roles",
-          "description": "OpenID Connect scope for add user roles to the access token",
-          "protocol": "openid-connect",
-          "attributes": { "include.in.token.scope": "false", "display.on.consent.screen": "true" },
-          "protocolMappers": [
-            { "name": "realm roles", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-realm-role-mapper", "config": { "multivalued": "true", "claim.name": "realm_access.roles", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true", "jsonType.label": "String", "add.to.lightweight.access.token": "true" } },
-            { "name": "client roles", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-client-role-mapper", "config": { "multivalued": "true", "claim.name": "resource_access.${client_id}.roles", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true", "jsonType.label": "String", "add.to.lightweight.access.token": "true" } },
-            { "name": "audience resolve", "protocol": "openid-connect", "protocolMapper": "oidc-audience-resolve-mapper", "config": { "access.token.claim": "true", "introspection.token.claim": "true" } }
-          ]
-        },
-        {
-          "name": "web-origins",
-          "description": "OpenID Connect scope for add allowed web origins to the access token",
-          "protocol": "openid-connect",
-          "attributes": { "include.in.token.scope": "false", "display.on.consent.screen": "false" },
-          "protocolMappers": [
-            { "name": "allowed web origins", "protocol": "openid-connect", "protocolMapper": "oidc-allowed-origins-mapper", "config": { "access.token.claim": "true", "introspection.token.claim": "true" } }
-          ]
-        },
-        {
-          "name": "acr",
-          "description": "OpenID Connect scope for add acr (authentication context class reference) to the token",
-          "protocol": "openid-connect",
-          "attributes": { "include.in.token.scope": "false", "display.on.consent.screen": "false" },
-          "protocolMappers": [
-            { "name": "acr loa level", "protocol": "openid-connect", "protocolMapper": "oidc-acr-mapper", "config": { "id.token.claim": "true", "access.token.claim": "true", "introspection.token.claim": "true" } }
-          ]
-        },
-        {
-          "name": "role_list",
-          "description": "SAML role list",
-          "protocol": "saml",
-          "attributes": { "consent.screen.text": "${samlRoleListScopeConsentText}", "display.on.consent.screen": "true" },
-          "protocolMappers": [
-            { "name": "role list", "protocol": "saml", "protocolMapper": "saml-role-list-mapper", "config": { "single": "false", "attribute.nameformat": "Basic", "attribute.name": "Role" } }
-          ]
-        },
-        {
-          "name": "offline_access",
-          "description": "OpenID Connect built-in scope: offline_access",
-          "protocol": "openid-connect",
-          "attributes": { "display.on.consent.screen": "true", "consent.screen.text": "${offlineAccessScopeConsentText}" }
-        },
-        {
-          "name": "address",
-          "description": "OpenID Connect built-in scope: address",
-          "protocol": "openid-connect",
-          "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "true" }
-        },
-        {
-          "name": "phone",
-          "description": "OpenID Connect built-in scope: phone",
-          "protocol": "openid-connect",
-          "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "true" }
-        },
-        {
-          "name": "microprofile-jwt",
-          "description": "Microprofile - JWT built-in scope",
-          "protocol": "openid-connect",
-          "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" }
-        }
-      ],
-      "defaultDefaultClientScopes": ["basic", "role_list", "profile", "email", "roles", "web-origins", "acr"],
-      "defaultOptionalClientScopes": ["offline_access", "address", "phone", "microprofile-jwt"]
-    }
+    {{- include "nvidia-infra-controller-cloud.labels" . | nindent 4 }}
+spec:
+  keycloakCRName: keycloak
+  realm:
+    realm: nico-dev
+    enabled: true
+    displayName: NICo Development
+    sslRequired: none
+    registrationAllowed: false
+    loginWithEmailAllowed: true
+    duplicateEmailsAllowed: false
+    resetPasswordAllowed: true
+    editUsernameAllowed: false
+    bruteForceProtected: true
+    roles:
+      realm:
+        - name: "test-org:PROVIDER_ADMIN"
+          description: "Provider Admin role for test-org"
+        - name: "test-org:TENANT_ADMIN"
+          description: "Tenant Admin role for test-org"
+        - name: "test-org:PROVIDER_VIEWER"
+          description: "Provider Viewer role for test-org"
+        - name: admin
+          description: "Administrator role"
+        - name: user
+          description: "Regular user role"
+      client:
+        nico-api:
+          - name: api-access
+            description: "Access to NICo API"
+    clientScopes:
+      - name: basic
+        description: "OpenID Connect scope for add all basic claims to the token"
+        protocol: openid-connect
+        attributes:
+          include.in.token.scope: "false"
+          display.on.consent.screen: "false"
+        protocolMappers:
+          - name: sub
+            protocol: openid-connect
+            protocolMapper: oidc-sub-mapper
+            consentRequired: false
+            config:
+              introspection.token.claim: "true"
+              access.token.claim: "true"
+              add.to.lightweight.access.token: "true"
+      - name: profile
+        description: "OpenID Connect built-in scope: profile"
+        protocol: openid-connect
+        attributes:
+          include.in.token.scope: "true"
+          display.on.consent.screen: "true"
+        protocolMappers:
+          - name: username
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-attribute-mapper
+            config:
+              user.attribute: username
+              claim.name: preferred_username
+              id.token.claim: "true"
+              access.token.claim: "true"
+              userinfo.token.claim: "true"
+              jsonType.label: String
+          - name: full name
+            protocol: openid-connect
+            protocolMapper: oidc-full-name-mapper
+            config:
+              id.token.claim: "true"
+              access.token.claim: "true"
+              userinfo.token.claim: "true"
+      - name: email
+        description: "OpenID Connect built-in scope: email"
+        protocol: openid-connect
+        attributes:
+          include.in.token.scope: "true"
+          display.on.consent.screen: "true"
+        protocolMappers:
+          - name: email
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-attribute-mapper
+            config:
+              user.attribute: email
+              claim.name: email
+              id.token.claim: "true"
+              access.token.claim: "true"
+              userinfo.token.claim: "true"
+              jsonType.label: String
+          - name: email verified
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-attribute-mapper
+            config:
+              user.attribute: emailVerified
+              claim.name: email_verified
+              id.token.claim: "true"
+              access.token.claim: "true"
+              userinfo.token.claim: "true"
+              jsonType.label: boolean
+      - name: roles
+        description: "OpenID Connect scope for add user roles to the access token"
+        protocol: openid-connect
+        attributes:
+          include.in.token.scope: "false"
+          display.on.consent.screen: "true"
+        protocolMappers:
+          - name: realm roles
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-realm-role-mapper
+            config:
+              multivalued: "true"
+              claim.name: realm_access.roles
+              id.token.claim: "true"
+              access.token.claim: "true"
+              userinfo.token.claim: "true"
+              jsonType.label: String
+              add.to.lightweight.access.token: "true"
+          - name: client roles
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-client-role-mapper
+            config:
+              multivalued: "true"
+              claim.name: "resource_access.${client_id}.roles"
+              id.token.claim: "true"
+              access.token.claim: "true"
+              userinfo.token.claim: "true"
+              jsonType.label: String
+              add.to.lightweight.access.token: "true"
+          - name: audience resolve
+            protocol: openid-connect
+            protocolMapper: oidc-audience-resolve-mapper
+            config:
+              access.token.claim: "true"
+              introspection.token.claim: "true"
+      - name: web-origins
+        description: "OpenID Connect scope for add allowed web origins to the access token"
+        protocol: openid-connect
+        attributes:
+          include.in.token.scope: "false"
+          display.on.consent.screen: "false"
+        protocolMappers:
+          - name: allowed web origins
+            protocol: openid-connect
+            protocolMapper: oidc-allowed-origins-mapper
+            config:
+              access.token.claim: "true"
+              introspection.token.claim: "true"
+      - name: acr
+        description: "OpenID Connect scope for add acr to the token"
+        protocol: openid-connect
+        attributes:
+          include.in.token.scope: "false"
+          display.on.consent.screen: "false"
+        protocolMappers:
+          - name: acr loa level
+            protocol: openid-connect
+            protocolMapper: oidc-acr-mapper
+            config:
+              id.token.claim: "true"
+              access.token.claim: "true"
+              introspection.token.claim: "true"
+      - name: role_list
+        description: "SAML role list"
+        protocol: saml
+        attributes:
+          consent.screen.text: "${samlRoleListScopeConsentText}"
+          display.on.consent.screen: "true"
+        protocolMappers:
+          - name: role list
+            protocol: saml
+            protocolMapper: saml-role-list-mapper
+            config:
+              single: "false"
+              attribute.nameformat: Basic
+              attribute.name: Role
+      - name: offline_access
+        description: "OpenID Connect built-in scope: offline_access"
+        protocol: openid-connect
+        attributes:
+          display.on.consent.screen: "true"
+          consent.screen.text: "${offlineAccessScopeConsentText}"
+      - name: address
+        description: "OpenID Connect built-in scope: address"
+        protocol: openid-connect
+        attributes:
+          include.in.token.scope: "true"
+          display.on.consent.screen: "true"
+      - name: phone
+        description: "OpenID Connect built-in scope: phone"
+        protocol: openid-connect
+        attributes:
+          include.in.token.scope: "true"
+          display.on.consent.screen: "true"
+      - name: microprofile-jwt
+        description: "Microprofile - JWT built-in scope"
+        protocol: openid-connect
+        attributes:
+          include.in.token.scope: "true"
+          display.on.consent.screen: "false"
+    clients:
+      - clientId: nico-api
+        name: NICo API
+        enabled: true
+        clientAuthenticatorType: client-secret
+        secret: nico-local-secret
+        redirectUris:
+          - "http://localhost:9388/*"
+          - "http://localhost:3000/*"
+        webOrigins:
+          - "http://localhost:9388"
+          - "http://localhost:3000"
+        publicClient: false
+        protocol: openid-connect
+        directAccessGrantsEnabled: true
+        serviceAccountsEnabled: true
+        authorizationServicesEnabled: false
+        standardFlowEnabled: true
+        implicitFlowEnabled: false
+        fullScopeAllowed: true
+        defaultClientScopes:
+          - basic
+          - web-origins
+          - acr
+          - profile
+          - roles
+          - email
+        optionalClientScopes:
+          - address
+          - phone
+          - offline_access
+          - microprofile-jwt
+        protocolMappers:
+          - name: audience
+            protocol: openid-connect
+            protocolMapper: oidc-audience-mapper
+            consentRequired: false
+            config:
+              included.client.audience: nico-api
+              id.token.claim: "true"
+              access.token.claim: "true"
+          - name: oidc_id
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-attribute-mapper
+            consentRequired: false
+            config:
+              user.attribute: oidc_id
+              claim.name: oidc_id
+              jsonType.label: String
+              id.token.claim: "true"
+              access.token.claim: "true"
+              userinfo.token.claim: "true"
+    users:
+      - username: testuser
+        email: testuser@example.com
+        emailVerified: true
+        enabled: true
+        firstName: Test
+        lastName: User
+        credentials:
+          - type: password
+            value: testpassword
+            temporary: false
+        realmRoles:
+          - user
+          - "test-org:TENANT_ADMIN"
+        clientRoles:
+          nico-api:
+            - api-access
+        attributes:
+          oidc_id:
+            - testuser-oidc-001
+      - username: admin
+        email: admin@example.com
+        emailVerified: true
+        enabled: true
+        firstName: Admin
+        lastName: User
+        credentials:
+          - type: password
+            value: adminpassword
+            temporary: false
+        realmRoles:
+          - admin
+          - user
+          - "test-org:PROVIDER_ADMIN"
+          - "test-org:TENANT_ADMIN"
+        clientRoles:
+          nico-api:
+            - api-access
+        attributes:
+          oidc_id:
+            - admin-oidc-001
+      - username: provider
+        email: provider@example.com
+        emailVerified: true
+        enabled: true
+        firstName: Provider
+        lastName: Admin
+        credentials:
+          - type: password
+            value: providerpassword
+            temporary: false
+        realmRoles:
+          - user
+          - "test-org:PROVIDER_ADMIN"
+        clientRoles:
+          nico-api:
+            - api-access
+        attributes:
+          oidc_id:
+            - provider-oidc-001
+    defaultDefaultClientScopes:
+      - basic
+      - role_list
+      - profile
+      - email
+      - roles
+      - web-origins
+      - acr
+    defaultOptionalClientScopes:
+      - offline_access
+      - address
+      - phone
+      - microprofile-jwt
 {{- end }}

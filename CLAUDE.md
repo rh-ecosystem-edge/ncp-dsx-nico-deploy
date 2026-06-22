@@ -42,8 +42,12 @@ nvidia-infra-controller-cloud namespace (management plane)
 ├── nico-rest-db (migration job)
 ├── Temporal server (official chart v1.2.0, Temporal 1.31.0)
 ├── temporal-pg (Crunchy PostgreSQL)
-├── nico-cloud-pg (Crunchy PostgreSQL — NICo REST data)
-└── Keycloak (RHBK)
+└── nico-cloud-pg (Crunchy PostgreSQL — NICo REST data)
+
+rhbk-operator namespace (Keycloak)
+├── Keycloak (RHBK operator CRD, TLS via cert-manager)
+├── keycloak-pg (Crunchy PostgreSQL)
+└── KeycloakRealmImport (nico-dev realm with OIDC client)
 
 nvidia-infra-controller-site namespace (per-site, edge)
 ├── nico-rest-site-agent → connects to cloud's Temporal via OTP certs

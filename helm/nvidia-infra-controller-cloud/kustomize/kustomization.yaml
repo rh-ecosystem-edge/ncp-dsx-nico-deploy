@@ -27,6 +27,11 @@ patches:
     target:
       kind: Deployment
       name: nico-rest-api
+  # Add NICo root CA to API trust store
+  - path: patches/fix-api-trust-ca.yaml
+    target:
+      kind: Deployment
+      name: nico-rest-api
   # Clear securityContext on credsmgr for OpenShift SCC
   - path: patches/fix-credsmgr-securitycontext.yaml
     target:

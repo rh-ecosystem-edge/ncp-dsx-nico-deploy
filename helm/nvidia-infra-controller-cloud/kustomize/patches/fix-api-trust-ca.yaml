@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build a combined CA bundle (system + NICo root CA) so the API trusts
+# internal TLS certs signed by our cert-manager CA.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: placeholder
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: build-ca-bundle
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              cat /etc/pki/tls/certs/ca-bundle.crt /etc/pki/nico-ca/ca.crt > /ca-bundle/ca-bundle.crt
+              echo "CA bundle created"
+          volumeMounts:
+            - name: nico-root-ca
+              mountPath: /etc/pki/nico-ca
+              readOnly: true
+            - name: ca-bundle
+              mountPath: /ca-bundle
+      containers:
+        - name: api
+          env:
+            - name: SSL_CERT_FILE
+              value: /etc/pki/ca-bundle/ca-bundle.crt
+          volumeMounts:
+            - name: ca-bundle
+              mountPath: /etc/pki/ca-bundle
+              readOnly: true
+      volumes:
+        - name: nico-root-ca
+          secret:
+            secretName: ca-signing-secret
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: ca-bundle
+          emptyDir: {}

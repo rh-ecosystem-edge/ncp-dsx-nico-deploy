@@ -30,10 +30,9 @@ metadata:
 spec:
   to:
     kind: Service
-    name: keycloak
+    name: keycloak-service
   port:
-    targetPort: http
+    targetPort: https
   tls:
-    termination: edge
-    insecureEdgeTerminationPolicy: Redirect
+    termination: passthrough
 {{- end }}

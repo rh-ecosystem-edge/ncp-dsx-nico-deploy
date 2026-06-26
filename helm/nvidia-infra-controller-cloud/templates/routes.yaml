@@ -36,5 +36,8 @@ spec:
   tls:
     termination: reencrypt
     insecureEdgeTerminationPolicy: Redirect
-    destinationCACertificate: ""
+    {{- $caSecret := lookup "v1" "Secret" "cert-manager" "nico-root-ca-secret" }}
+    {{- if $caSecret }}
+    destinationCACertificate: {{ index $caSecret.data "ca.crt" | b64dec | quote }}
+    {{- end }}
 {{- end }}

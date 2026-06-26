@@ -14,7 +14,7 @@ metadata:
     "helm.sh/hook": pre-install
     "helm.sh/hook-weight": "-10"
 spec:
-  postgresVersion: 16
+  postgresVersion: 18
   instances:
     - name: instance1
       replicas: {{ .Values.postgresql.instances | default 1 }}
@@ -61,4 +61,5 @@ data:
     \c nico
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
     CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+    CREATE EXTENSION IF NOT EXISTS "btree_gin";
 {{- end }}

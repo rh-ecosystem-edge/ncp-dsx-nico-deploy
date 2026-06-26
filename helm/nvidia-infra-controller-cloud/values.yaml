@@ -8,6 +8,7 @@
 keycloakInstance:
   enabled: true
   namespace: rhbk-operator
+  org: ncx
   admin:
     username: admin
     password: admin
@@ -325,8 +326,8 @@ nico-rest-api:
       enabled: true
       baseURL: "https://keycloak-service.rhbk-operator:8443"
       externalBaseURL: ""
-      realm: "nico-dev"
-      clientID: "nico-api"
+      realm: "nico"
+      clientID: "nico-rest"
       clientSecretPath: /var/secrets/keycloak/client-secret
       serviceAccount: true
     rateLimiter:

@@ -16,7 +16,7 @@ DOCKERFILE_DIR := docker/ubi
 CLUSTER_DOMAIN ?= $(shell oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
 
 # Post-renderer for Kustomize patches
-POST_RENDERER := kustomize-spiffe
+POST_RENDERER := kustomize-post-renderer
 CLOUD_KUSTOMIZE := $(CURDIR)/helm/nvidia-infra-controller-cloud/kustomize
 SITE_KUSTOMIZE := $(CURDIR)/helm/nvidia-infra-controller-site/kustomize
 
@@ -93,6 +93,8 @@ endif
 		helm/nvidia-infra-controller-site/ \
 		--timeout 15m \
 		--set nico-rest-site-agent.envConfig.CLUSTER_ID=$(SITE_ID) \
+		--set nico-rest-site-agent.envConfig.TEMPORAL_SUBSCRIBE_NAMESPACE=$(SITE_ID) \
+		--set nico-rest-site-agent.envConfig.TEMPORAL_SUBSCRIBE_QUEUE=$(SITE_ID) \
 		--set nico-rest-site-agent.bootstrap.enabled=true \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(SITE_KUSTOMIZE)
 

@@ -45,7 +45,7 @@ nvidia-infra-controller-cloud namespace (management plane)
 rhbk-operator namespace (Keycloak)
 ├── Keycloak (RHBK operator CRD, TLS via cert-manager)
 ├── keycloak-pg (Crunchy PostgreSQL)
-└── KeycloakRealmImport (nico-dev realm with OIDC client)
+└── KeycloakRealmImport (nico realm, nico-rest + ncx-service clients)
 
 nvidia-infra-controller-site namespace (per-site, edge)
 ├── nico-rest-site-agent → connects to cloud's Temporal via OTP certs
@@ -126,6 +126,28 @@ make deploy-prereqs      Install operators and ClusterIssuers
 make deploy-cloud        Deploy cloud profile (Temporal, Keycloak, REST)
 make deploy-site         Deploy site profile (Core, site-agent, Vault)
 ```
+
+## PostgreSQL Versions
+
+Cloud profile (REST API, Temporal, Keycloak): **PG18** via Crunchy PGO 5.8.8 default
+image. PGO 5.8.8 has broken PG15/PG16 image digests; PG17 and PG18 work.
+
+Site profile (Core): **PG15** pinned to `ubi9-15.15-2550`. Upstream validates
+against PG15 (Spilo-15). PG17/PG18 break Core's Rust sqlx migrations due to
+SQL function inlining during `CREATE INDEX` within multi-statement queries
+(extension functions like `uuid_nil()` aren't visible to the inliner).
+
+## Keycloak Realm
+
+Realm `nico` (aligned with upstream `helm-prereqs/keycloak/realm-configmap.yaml`):
+- `nico-rest` client: human users (standardFlow + directAccess + serviceAccount)
+- `ncx-service` client: M2M only (client_credentials grant, 30min token TTL)
+- Roles: `ncx:NICO_PROVIDER_ADMIN`, `ncx:NICO_TENANT_ADMIN`, `ncx:NICO_PROVIDER_VIEWER`
+- Single user: `service-account-ncx-service` (auto-created, has `oidc_id` attribute)
+- RHBK 26.x requires explicit `Client ID` protocol mapper on `ncx-service`
+  (PGO auto-generated mappers are overwritten when `protocolMappers` is specified)
+- Keycloak route uses `reencrypt` with CA cert injected via Helm `lookup`
+- Token issuer must match `externalBaseURL` — fetch tokens via the external route
 
 ## Conventions
 

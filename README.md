@@ -27,18 +27,22 @@ DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain
 KC_URL="https://keycloak-rhbk-operator.${DOMAIN}"
 API_URL="https://nico-rest-api-nvidia-infra-controller-cloud.${DOMAIN}"
 
-# Get a Keycloak token
-TOKEN=$(curl -sk -X POST "$KC_URL/realms/nico-dev/protocol/openid-connect/token" \
-  -d "grant_type=password" \
-  -d "client_id=nico-api" \
+# Get a service-account token (client_credentials grant)
+TOKEN=$(curl -sk -X POST "${KC_URL}/realms/nico/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials" \
+  -d "client_id=ncx-service" \
   -d "client_secret=nico-local-secret" \
-  -d "username=admin" \
-  -d "password=adminpassword" | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
 
-# Create site using nicocli (available in the nico-rest-api pod)
-oc exec deployment/nico-rest-api -n nvidia-infra-controller-cloud -- \
-  /app/nicocli --api-url https://localhost:8388 --token "$TOKEN" \
-  site create --org test-org --name site-1 --description "First site"
+# Bootstrap the org (required one-time call)
+curl -sk -H "Authorization: Bearer ${TOKEN}" \
+  "${API_URL}/v2/org/ncx/nico/service-account/current" | python3 -m json.tool
+
+# Create site
+curl -sk -X POST -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"site-1","description":"First site"}' \
+  "${API_URL}/v2/org/ncx/nico/site" | python3 -m json.tool
 ```
 
 Record `id` (site UUID) and `registrationToken` (OTP) from the response.
@@ -75,8 +79,9 @@ Two CLI images for interacting with NICo:
 oc run nicocli --rm -it --restart=Never \
   --image=<registry>/nicocli:latest \
   -- --keycloak-url https://keycloak-rhbk-operator.<domain> \
+     --keycloak-realm nico --client-id ncx-service \
      --base-url https://nico-rest-api-nvidia-infra-controller-cloud.<domain> \
-     site list --org test-org
+     site list --org ncx
 ```
 
 **nico-admin-cli** — Core gRPC client (bare metal management, host discovery):

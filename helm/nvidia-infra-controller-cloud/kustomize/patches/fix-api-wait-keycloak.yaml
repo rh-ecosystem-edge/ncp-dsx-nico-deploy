@@ -19,7 +19,7 @@ spec:
             - -c
             - |
               echo "Waiting for Keycloak OIDC endpoint..."
-              until curl -skf https://keycloak-service.rhbk-operator:8443/realms/nico-dev/.well-known/openid-configuration > /dev/null 2>&1; do
+              until curl -skf https://keycloak-service.rhbk-operator:8443/realms/nico/.well-known/openid-configuration > /dev/null 2>&1; do
                 sleep 5
               done
               echo "Keycloak ready"

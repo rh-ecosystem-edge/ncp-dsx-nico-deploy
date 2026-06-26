@@ -1,7 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Add pg_isready init container and increase backoffLimit for Core migration.
+# - Add pg_isready init container and increase backoffLimit for Core migration.
+# PG18 compatibility: check_function_bodies=off is set at PostgresCluster
+# level via patroni.dynamicConfiguration to avoid PG18's stricter function
+# body validation during CREATE FUNCTION in migrations.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -14,6 +17,12 @@ spec:
         - name: wait-for-postgres
           image: registry.redhat.io/rhel10/postgresql-18:latest
           imagePullPolicy: IfNotPresent
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nico-site-core-pg-pguser-nico
+                  key: password
           command:
             - /bin/sh
             - -c
@@ -22,3 +31,9 @@ spec:
                 echo "Waiting for PostgreSQL..."
                 sleep 5
               done
+              echo "PostgreSQL is ready, waiting for uuid-ossp extension..."
+              until psql -h nico-site-core-pg-primary -p 5432 -U nico -d nico -tAc "SELECT 1 FROM pg_extension WHERE extname='uuid-ossp'" | grep -q 1; do
+                echo "Waiting for uuid-ossp extension..."
+                sleep 5
+              done
+              echo "uuid-ossp extension is available"

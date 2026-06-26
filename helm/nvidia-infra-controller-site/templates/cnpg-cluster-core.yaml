@@ -14,7 +14,8 @@ metadata:
     "helm.sh/hook": pre-install
     "helm.sh/hook-weight": "-10"
 spec:
-  postgresVersion: 16
+  image: registry.connect.redhat.com/crunchydata/crunchy-postgres:ubi9-15.15-2550
+  postgresVersion: 15
   instances:
     - name: instance1
       replicas: 1
@@ -58,5 +59,8 @@ metadata:
     "helm.sh/hook-weight": "-10"
 data:
   init.sql: |
+    \c nico
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+    CREATE EXTENSION IF NOT EXISTS "btree_gin";
 {{- end }}

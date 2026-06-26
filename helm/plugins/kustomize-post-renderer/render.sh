@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Helm post-renderer plugin for Kustomize-based SPIFFE patching.
-# Usage: helm install ... --post-renderer kustomize-spiffe --post-renderer-args <kustomize-dir>
+# Helm post-renderer plugin that applies Kustomize patches to rendered manifests.
+# Usage: helm install ... --post-renderer kustomize-post-renderer --post-renderer-args <kustomize-dir>
 
 set -euo pipefail
 

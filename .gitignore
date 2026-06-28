@@ -10,3 +10,5 @@ helm/nico-site/charts/
 helm/nico-site/Chart.lock
 helm/nico-temporal/charts/
 helm/nico-temporal/Chart.lock
+helm/nvidia-infra-controller-cloud/charts/
+helm/nvidia-infra-controller-site/charts/

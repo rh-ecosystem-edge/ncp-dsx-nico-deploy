@@ -17,10 +17,10 @@ dependencies:
     repository: "https://helm.releases.hashicorp.com"
   - name: nico-rest-common
     version: "0.1.0"
-    repository: "file://../vendor/infra-controller/helm/rest/nico-rest/charts/nico-rest-common"
+    repository: "file://../vendor/infra-controller/rest-api/helm/charts/nico-rest/charts/nico-rest-common"
   - name: nico-rest-site-agent
     version: "0.1.9"
-    repository: "file://../vendor/infra-controller/helm/rest/nico-rest-site-agent"
+    repository: "file://../vendor/infra-controller/rest-api/helm/charts/nico-rest-site-agent"
   - name: nico
     version: "0.1.1"
     repository: "file://../vendor/infra-controller/helm"

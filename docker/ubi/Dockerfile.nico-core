@@ -56,7 +56,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     su postgres -c "pg_ctl start -D /var/lib/pgsql/data -l /tmp/pg.log -w -o '-k /run/postgresql'" && \
     cargo build --release \
         -p carbide-api \
-        -p nico-admin-cli \
+        -p carbide-admin-cli \
         -p carbide-dns \
         -p carbide-dsx-exchange-consumer \
         -p carbide-bmc-proxy && \
@@ -78,8 +78,8 @@ LABEL name="nico-core" \
 
 COPY --from=builder /app/bin/carbide-api /opt/nico/nico-api
 COPY --from=builder /app/bin/carbide-api /opt/carbide/carbide-api
-COPY --from=builder /app/bin/nico-admin-cli /opt/nico/nico-admin-cli
-COPY --from=builder /app/bin/nico-admin-cli /opt/carbide/nico-admin-cli
+COPY --from=builder /app/bin/carbide-admin-cli /opt/nico/nico-admin-cli
+COPY --from=builder /app/bin/carbide-admin-cli /opt/carbide/nico-admin-cli
 COPY --from=builder /app/bin/carbide-dns /opt/nico/nico-dns
 COPY --from=builder /app/bin/carbide-dsx-exchange-consumer /opt/nico/nico-dsx-exchange-consumer
 COPY --from=builder /app/bin/carbide-bmc-proxy /opt/nico/nico-bmc-proxy

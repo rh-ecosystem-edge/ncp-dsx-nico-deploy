@@ -48,8 +48,8 @@ ENV DATABASE_URL="postgresql://%2Frun%2Fpostgresql"
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/workspace/target \
     su postgres -c "pg_ctl start -D /var/lib/pgsql/data -l /tmp/pg.log -w -o '-k /run/postgresql'" && \
-    cargo build --release -p nico-admin-cli && \
-    cp /workspace/target/release/nico-admin-cli /usr/local/bin/nico-admin-cli
+    cargo build --release -p carbide-admin-cli && \
+    cp /workspace/target/release/carbide-admin-cli /usr/local/bin/nico-admin-cli
 
 # --- Runtime stage ---
 FROM registry.access.redhat.com/ubi10/ubi-micro:latest

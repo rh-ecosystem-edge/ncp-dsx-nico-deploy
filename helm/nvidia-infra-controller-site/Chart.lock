@@ -3,13 +3,13 @@ dependencies:
   repository: https://helm.releases.hashicorp.com
   version: 0.33.0
 - name: nico-rest-common
-  repository: file://../vendor/infra-controller/helm/rest/nico-rest/charts/nico-rest-common
+  repository: file://../vendor/infra-controller/rest-api/helm/charts/nico-rest/charts/nico-rest-common
   version: 0.1.0
 - name: nico-rest-site-agent
-  repository: file://../vendor/infra-controller/helm/rest/nico-rest-site-agent
+  repository: file://../vendor/infra-controller/rest-api/helm/charts/nico-rest-site-agent
   version: 0.1.9
 - name: nico
   repository: file://../vendor/infra-controller/helm
   version: 0.1.1
-digest: sha256:dcf075f3122f3ff945366ffa733306f155ef12578888b53e480e018ae77ec7da
-generated: "2026-06-22T18:01:06.369166136+02:00"
+digest: sha256:d72da6bbaf8cb5546847c03a013295512aa6936a44dc824f1fb03a7580249809
+generated: "2026-06-28T22:18:31.053574577+02:00"

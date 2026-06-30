@@ -57,14 +57,8 @@ data:
     spec:
       ca:
         secretName: nico-root-ca-secret
-    ---
-    apiVersion: cert-manager.io/v1
-    kind: ClusterIssuer
-    metadata:
-      name: vault-nico-issuer
-    spec:
-      ca:
-        secretName: nico-root-ca-secret
+    # vault-nico-issuer is created by the site chart's vault-init Job
+    # as a Vault PKI-backed ClusterIssuer (matching upstream)
 ---
 apiVersion: batch/v1
 kind: Job

@@ -1,0 +1,85 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Consolidated PostgreSQL cluster for the site profile.
+All site databases (nico, flow, psm, nsm) run on a single Crunchy
+PostgresCluster pinned to PG15, matching upstream's Spilo-15.
+*/}}
+{{- if .Values.postgresql.enabled }}
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: nico-site-pg
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-10"
+spec:
+  image: registry.connect.redhat.com/crunchydata/crunchy-postgres:ubi9-15.15-2550
+  postgresVersion: 15
+  instances:
+    - name: instance1
+      replicas: 1
+      dataVolumeClaimSpec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: 5Gi
+  users:
+    - name: nico
+      databases:
+        - nico
+        {{- if .Values.flow.enabled }}
+        - flow
+        - psm
+        - nsm
+        {{- end }}
+      options: "SUPERUSER"
+      password:
+        type: AlphaNumeric
+  databaseInitSQL:
+    key: init.sql
+    name: nico-site-db-init
+  backups:
+    pgbackrest:
+      repos:
+        - name: repo1
+          volume:
+            volumeClaimSpec:
+              accessModes:
+                - "ReadWriteOnce"
+              resources:
+                requests:
+                  storage: 1Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nico-site-db-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-10"
+data:
+  init.sql: |
+    \c nico
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+    CREATE EXTENSION IF NOT EXISTS "btree_gin";
+    {{- if .Values.flow.enabled }}
+    \c flow
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+    CREATE EXTENSION IF NOT EXISTS "btree_gin";
+    \c psm
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    \c nsm
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    {{- end }}
+{{- end }}

@@ -25,5 +25,13 @@ rhbk:
   installPlanApproval: Automatic
   namespace: rhbk-operator
 
+externalSecrets:
+  enabled: true
+  channel: stable
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+  namespace: openshift-operators
+
 clusterIssuers:
   enabled: true

@@ -1,0 +1,299 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Transit Vault — dedicated auto-unseal service for the primary Vault HA cluster.
+Standalone mode, file storage, TLS enabled. Only the Transit secrets engine
+is enabled. The primary Vault's seal "transit" stanza points here.
+
+Initialized once via post-install hook Job. The unseal key is stored in a
+Kubernetes Secret (acceptable for the transit Vault since it only holds
+the auto-unseal key, not application secrets).
+*/}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-transit
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vault-transit
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8200
+      targetPort: 8200
+      protocol: TCP
+      name: https
+  selector:
+    app.kubernetes.io/component: vault-transit
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vault-transit
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vault-transit
+spec:
+  serviceName: vault-transit
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: vault-transit
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: vault-transit
+    spec:
+      containers:
+        - name: vault
+          image: {{ .Values.vaultConfig.configJob.vaultImage | quote }}
+          command: ["vault", "server", "-config=/vault/config/config.hcl"]
+          ports:
+            - containerPort: 8200
+              name: https
+          env:
+            - name: VAULT_ADDR
+              value: "https://127.0.0.1:8200"
+            - name: VAULT_CACERT
+              value: /vault/tls/ca.crt
+            - name: VAULT_SKIP_VERIFY
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204
+              port: 8200
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /v1/sys/health?sealedcode=204&uninitcode=204&standbyok=true
+              port: 8200
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          volumeMounts:
+            - name: vault-data
+              mountPath: /vault/data
+            - name: vault-config
+              mountPath: /vault/config
+            - name: vault-tls
+              mountPath: /vault/tls
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: vault-config
+          configMap:
+            name: vault-transit-config
+        - name: vault-tls
+          secret:
+            secretName: vault-transit-tls
+  volumeClaimTemplates:
+    - metadata:
+        name: vault-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-transit-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+data:
+  config.hcl: |
+    listener "tcp" {
+      address         = "[::]:8200"
+      tls_cert_file   = "/vault/tls/tls.crt"
+      tls_key_file    = "/vault/tls/tls.key"
+      tls_client_ca_file = "/vault/tls/ca.crt"
+    }
+    storage "file" {
+      path = "/vault/data"
+    }
+    disable_mlock = true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-transit-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vault-transit-init
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vault-transit-init
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vault-transit-init
+subjects:
+  - kind: ServiceAccount
+    name: vault-transit-init
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-transit-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: vault-transit-init
+      volumes:
+        - name: transit-data
+          emptyDir: {}
+      initContainers:
+        - name: wait-transit
+          image: {{ .Values.vaultConfig.configJob.vaultImage | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: VAULT_ADDR
+              value: "https://vault-transit.{{ .Release.Namespace }}.svc:8200"
+            - name: VAULT_SKIP_VERIFY
+              value: "true"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for Transit Vault..."
+              until vault status -tls-skip-verify -format=json 2>/dev/null \
+                | grep -q '"initialized"'; do
+                sleep 5
+              done
+              echo "Transit Vault reachable"
+      containers:
+        - name: init-transit
+          image: {{ .Values.vaultConfig.configJob.vaultImage | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: VAULT_ADDR
+              value: "https://vault-transit.{{ .Release.Namespace }}.svc:8200"
+            - name: VAULT_SKIP_VERIFY
+              value: "true"
+          volumeMounts:
+            - name: transit-data
+              mountPath: /transit-data
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              if vault status -format=json 2>/dev/null | grep -q '"initialized".*false'; then
+                echo "Initializing Transit Vault..."
+                INIT=$(vault operator init -key-shares=1 -key-threshold=1 -format=json)
+                UNSEAL_KEY=$(echo "$INIT" | sed -n 's/.*"unseal_keys_b64":\["\([^"]*\)".*/\1/p')
+                ROOT_TOKEN=$(echo "$INIT" | sed -n 's/.*"root_token":"\([^"]*\)".*/\1/p')
+                echo "$UNSEAL_KEY" > /transit-data/unseal-key
+                echo "$ROOT_TOKEN" > /transit-data/root-token
+              fi
+
+              if vault status -format=json 2>/dev/null | grep -q '"sealed".*true'; then
+                vault operator unseal "$(cat /transit-data/unseal-key)"
+              fi
+
+              export VAULT_TOKEN=$(cat /transit-data/root-token)
+
+              echo "Enabling Transit secrets engine..."
+              vault secrets enable transit 2>/dev/null || true
+
+              echo "Creating autounseal key..."
+              vault write -f transit/keys/autounseal 2>/dev/null || true
+
+              echo "Writing autounseal policy..."
+              vault policy write autounseal - <<'POLICY'
+              path "transit/encrypt/autounseal" {
+                capabilities = ["update"]
+              }
+              path "transit/decrypt/autounseal" {
+                capabilities = ["update"]
+              }
+              POLICY
+
+              echo "Creating autounseal token..."
+              TRANSIT_TOKEN=$(vault token create \
+                -orphan \
+                -policy=autounseal \
+                -period=24h \
+                -field=token)
+              echo "$TRANSIT_TOKEN" > /transit-data/transit-token
+
+              touch /transit-data/done
+              echo "Transit Vault configured"
+        - name: create-secrets
+          image: {{ .Values.vaultConfig.configJob.kubectlImage | quote }}
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: transit-data
+              mountPath: /transit-data
+              readOnly: true
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              until [ -f /transit-data/done ]; do sleep 2; done
+              NS={{ .Release.Namespace }}
+
+              if [ -f /transit-data/unseal-key ]; then
+                kubectl create secret generic vault-transit-unseal -n "$NS" \
+                  --from-literal=unseal-key="$(cat /transit-data/unseal-key)" \
+                  --from-literal=root-token="$(cat /transit-data/root-token)" \
+                  --dry-run=client -o yaml | kubectl apply -f -
+              fi
+
+              kubectl create secret generic vault-transit-token -n "$NS" \
+                --from-literal=token="$(cat /transit-data/transit-token)" \
+                --dry-run=client -o yaml | kubectl apply -f -
+
+              echo "Transit secrets created"

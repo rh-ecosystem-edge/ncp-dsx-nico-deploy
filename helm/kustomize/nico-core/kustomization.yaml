@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - all.yaml
+
+images:
+  - name: quay.io/fdupont-redhat:latest
+    newName: quay.io/fdupont-redhat/nico-core
+    newTag: v0.10.3
+
+patches:
+  # Remove nico-flow Namespace resource (conflicts with Helm ownership)
+  - path: patches/remove-flow-namespace.yaml
+    target:
+      kind: Namespace
+      name: nico-system
+
+  # Core migration: pg_isready init, backoffLimit, fix secret key
+  - path: patches/fix-core-migration.yaml
+    target:
+      kind: Job
+      name: nico-api-migrate
+  - path: patches/fix-core-secret-keys.yaml
+    target:
+      kind: Job
+      name: nico-api-migrate
+
+  # Core API deployment: fix Crunchy secret key (user not username)
+  - path: patches/fix-core-deployment-keys.yaml
+    target:
+      kind: Deployment
+      name: nico-api
+
+  # Make nico-roots volume optional (stub for dev)
+  - path: patches/fix-core-optional-volumes.yaml
+    target:
+      kind: Deployment
+      name: nico-api
+
+  # Remove SYS_PTRACE, set RUST_BACKTRACE=1 (production-safe)
+  - path: patches/fix-core-security-context.yaml
+    target:
+      kind: Deployment
+      name: nico-api
+
+  # Flow deployment: fix Crunchy secret key (user not username)
+  - path: patches/fix-flow-secret-keys.yaml
+    target:
+      kind: Deployment
+      name: flow
+
+  # Remove SYS_PTRACE from DSX Exchange Consumer for OpenShift SCC
+  - path: patches/fix-dsx-exchange-consumer-security-context.yaml
+    target:
+      kind: Deployment
+      name: nico-dsx-exchange-consumer

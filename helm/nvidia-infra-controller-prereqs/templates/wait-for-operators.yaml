@@ -6,7 +6,7 @@ Waits for operator CRDs to be available before Crunchy PostgreSQL
 clusters and cert-manager Certificates can be created.
 */}}
 
-{{- if or .Values.certManager.enabled .Values.crunchyPostgres.enabled }}
+{{- if or .Values.certManager.enabled .Values.crunchyPostgres.enabled .Values.externalSecrets.enabled }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -76,6 +76,13 @@ spec:
                 sleep 5
               done
               echo "cert-manager CRDs available"
+              {{- end }}
+              {{- if .Values.externalSecrets.enabled }}
+              echo "Waiting for External Secrets CRDs..."
+              until oc get crd externalsecrets.external-secrets.io > /dev/null 2>&1; do
+                sleep 5
+              done
+              echo "External Secrets CRDs available"
               {{- end }}
               echo "All operator CRDs ready"
 {{- end }}

@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Remove SYS_PTRACE (not allowed by OpenShift restricted SCC).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nico-dsx-exchange-consumer
+spec:
+  template:
+    spec:
+      containers:
+        - name: nico-dsx-exchange-consumer
+          securityContext:
+            capabilities:
+              add: []

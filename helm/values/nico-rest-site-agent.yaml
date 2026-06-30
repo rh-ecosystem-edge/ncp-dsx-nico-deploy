@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# =============================================================================
+# Values override for upstream nico-rest-site-agent chart
+# Deployed in the nico-system namespace
+# =============================================================================
+
+global:
+  image:
+    repository: quay.io/fdupont-redhat
+    tag: latest
+    pullPolicy: IfNotPresent
+  certificate:
+    issuerRef:
+      kind: ClusterIssuer
+      name: nico-rest-ca-issuer
+      group: cert-manager.io
+
+nico-rest-site-agent:
+  replicaCount: 1
+  certificate:
+    enabled: true
+    uris:
+      - "spiffe://nico.local/nico-system/sa/nico-rest-site-agent"
+  bootstrap:
+    enabled: false
+    siteManager:
+      address: nico-rest-site-manager.nico-rest
+      tlsSecret: site-manager-tls
+  envConfig:
+    ESA_PORT: "8080"
+    METRICS_PORT: "2112"
+    DEV_MODE: "false"
+    ENABLE_DEBUG: "false"
+    ENABLE_TLS: "true"
+    NICO_ADDRESS: "nico-api:1079"
+    NICO_SEC_OPT: "0"
+    CORE_GRPC_ADDRESS: "nico-api:1079"
+    CORE_GRPC_CA_CERT_PATH: "/etc/nico/ca.crt"
+    CORE_GRPC_CLIENT_CERT_PATH: "/etc/nico/tls.crt"
+    CORE_GRPC_CLIENT_KEY_PATH: "/etc/nico/tls.key"
+    CLUSTER_ID: ""
+    TEMPORAL_HOST: "temporal-frontend.nico-rest"
+    TEMPORAL_PORT: "7233"
+    TEMPORAL_SERVER: "interservice.server.temporal.local"
+    TEMPORAL_PUBLISH_NAMESPACE: "site"
+    TEMPORAL_PUBLISH_QUEUE: "site"
+    TEMPORAL_SUBSCRIBE_NAMESPACE: "site"
+    TEMPORAL_SUBSCRIBE_QUEUE: "site"
+    TEMPORAL_INVENTORY_SCHEDULE: "@every 3m"
+    TEMPORAL_CERT_PATH: "/etc/temporal-certs"
+    TEMPORAL_CERT: "temporal-client-site-agent-certs"

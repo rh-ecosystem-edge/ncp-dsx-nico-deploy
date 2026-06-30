@@ -1,0 +1,39 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Vault TLS certificate — issued by site-issuer before Vault starts.
+Breaks the chicken-and-egg: Vault needs TLS certs before it can serve requests,
+but vault-nico-issuer (Vault PKI) can't issue certs until Vault is running.
+We use the site-issuer (backed by nico-root-ca-secret) instead.
+*/}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vault-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-8"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  secretName: vault-tls
+  duration: 720h0m0s
+  renewBefore: 360h0m0s
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+  dnsNames:
+    - vault
+    - vault.{{ .Release.Namespace }}
+    - vault.{{ .Release.Namespace }}.svc
+    - vault.{{ .Release.Namespace }}.svc.cluster.local
+    - vault-0.vault-internal
+    - vault-1.vault-internal
+    - vault-2.vault-internal
+  issuerRef:
+    name: site-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

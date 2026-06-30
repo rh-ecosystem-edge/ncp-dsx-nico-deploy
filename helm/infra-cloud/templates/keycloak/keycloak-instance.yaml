@@ -1,0 +1,87 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Deploys Keycloak via the RHBK operator CRDs with TLS from cert-manager.
+Set keycloakInstance.enabled=false to use an external Keycloak.
+*/}}
+
+{{- if .Values.keycloakInstance.enabled }}
+{{- $ns := .Values.keycloakInstance.namespace }}
+{{- $kc := .Values.keycloakInstance }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-tls
+  namespace: {{ $ns }}
+spec:
+  secretName: keycloak-tls-secret
+  duration: 2160h
+  renewBefore: 360h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  dnsNames:
+    - keycloak-service
+    - keycloak-service.{{ $ns }}
+    - keycloak-service.{{ $ns }}.svc
+    - keycloak-service.{{ $ns }}.svc.cluster.local
+  issuerRef:
+    name: nico-rest-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: keycloak
+  namespace: {{ $ns }}
+  labels:
+    {{- include "nvidia-infra-controller-cloud-infra.labels" . | nindent 4 }}
+spec:
+  instances: 1
+  http:
+    httpEnabled: true
+    tlsSecret: keycloak-tls-secret
+  proxy:
+    headers: xforwarded
+  bootstrapAdmin:
+    user:
+      secret: keycloak-admin-secret
+  db:
+    vendor: postgres
+    host: nico-cloud-pg-primary
+    port: 5432
+    database: keycloak
+    usernameSecret:
+      name: nico-cloud-pg-pguser-keycloak
+      key: user
+    passwordSecret:
+      name: nico-cloud-pg-pguser-keycloak
+      key: password
+  additionalOptions:
+    - name: hostname-strict
+      value: "false"
+    - name: health-enabled
+      value: "true"
+---
+{{- $existingAdmin := lookup "v1" "Secret" $ns "keycloak-admin-secret" }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-admin-secret
+  namespace: {{ $ns }}
+  labels:
+    {{- include "nvidia-infra-controller-cloud-infra.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  username: {{ $kc.admin.username }}
+  {{- if $existingAdmin }}
+  password: {{ index $existingAdmin.data "password" | b64dec }}
+  {{- else if $kc.admin.password }}
+  password: {{ $kc.admin.password }}
+  {{- else }}
+  password: {{ randAlphaNum 24 }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,82 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Consolidated PostgreSQL cluster for the cloud profile.
+All cloud databases (nico, temporal, temporal_visibility, keycloak)
+run on a single Crunchy PostgresCluster, matching upstream's pattern.
+*/}}
+{{- if .Values.postgresql.enabled }}
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: nico-cloud-pg
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-cloud-infra.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-10"
+spec:
+  postgresVersion: 18
+  instances:
+    - name: instance1
+      replicas: {{ .Values.postgresql.instances | default 1 }}
+      dataVolumeClaimSpec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.storage.size | default "5Gi" }}
+  users:
+    - name: nico
+      databases:
+        - nico
+      options: "SUPERUSER"
+      password:
+        type: AlphaNumeric
+    - name: temporal
+      databases:
+        - temporal
+        - temporal_visibility
+      options: "SUPERUSER"
+      password:
+        type: AlphaNumeric
+    - name: keycloak
+      databases:
+        - keycloak
+      options: "SUPERUSER"
+      password:
+        type: AlphaNumeric
+  databaseInitSQL:
+    key: init.sql
+    name: nico-cloud-db-init
+  backups:
+    pgbackrest:
+      repos:
+        - name: repo1
+          volume:
+            volumeClaimSpec:
+              accessModes:
+                - "ReadWriteOnce"
+              resources:
+                requests:
+                  storage: 1Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nico-cloud-db-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-cloud-infra.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-10"
+data:
+  init.sql: |
+    \c nico
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+    CREATE EXTENSION IF NOT EXISTS "btree_gin";
+{{- end }}

@@ -1,0 +1,183 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# =============================================================================
+# Values override for upstream Core nico chart
+# Deployed in the nico-system namespace
+# =============================================================================
+
+global:
+  image:
+    repository: quay.io/fdupont-redhat/nico-core
+    tag: v0.10.3
+    pullPolicy: IfNotPresent
+  spiffe:
+    trustDomain: nico.local
+  certificate:
+    issuerRef:
+      kind: ClusterIssuer
+      name: vault-nico-issuer
+      group: cert-manager.io
+
+nico-api:
+  enabled: true
+  replicas: 1
+  bootArtifactContainers: []
+  # Uncomment and configure for your architecture:
+  # - name: boot-artifacts-x86-64
+  #   image: <registry>/boot-artifacts-x86_64:latest
+  #   command: ["sh", "-c", "cp -r /x86_64 /boot-artifacts/blobs/internal"]
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  hostname: "nico.local"
+  siteConfig:
+    enabled: true
+    nicoApiSiteConfig: |
+      [auth.trust]
+      spiffe_trust_domain = "nico.local"
+      spiffe_service_base_paths = ["/nico-system/sa/", "/default/sa/", "/elektra-site-agent/sa/"]
+      spiffe_machine_base_path = "/nico-system/machine/"
+      [pools.lo-ip]
+      type = "ipv4"
+      ranges = [{ start = "10.100.0.1", end = "10.100.0.254" }]
+
+      [pools.vpc-dpu-lo]
+      type = "ipv4"
+      ranges = [{ start = "10.101.0.1", end = "10.101.0.254" }]
+
+      [pools.secondary-vtep-ip]
+      type = "ipv4"
+      ranges = [{ start = "10.102.0.1", end = "10.102.0.254" }]
+
+      [pools.vni]
+      type = "integer"
+      ranges = [{ start = "100000", end = "199999" }]
+
+      [pools.vpc-vni]
+      type = "integer"
+      ranges = [{ start = "200000", end = "299999" }]
+
+      [pools.external-vpc-vni]
+      type = "integer"
+      ranges = [{ start = "300000", end = "399999" }]
+
+      [pools.vlan-id]
+      type = "integer"
+      ranges = [{ start = "100", end = "4094" }]
+
+      [pools.fnn-asn]
+      type = "integer"
+      ranges = [{ start = "4200000000", end = "4200000254" }]
+  envFrom:
+    vaultApproleTokens:
+      secretName: nico-vault-approle-tokens
+    vaultToken:
+      secretName: vault-unseal-secret
+    vaultClusterInfo:
+      configMapName: vault-cluster-info
+    databaseCredentials:
+      secretName: nico-site-pg-pguser-nico
+    databaseConfig:
+      configMapName: nico-system-nico-database-config
+    nicoWebHostname:
+      configMapName: nico-web-api-hostname
+  vaultClusterInfo:
+    VAULT_SERVICE: "https://vault.nico-system:8200"
+    NICO_VAULT_MOUNT: "secrets"
+    NICO_VAULT_PKI_MOUNT: "nicoca"
+  databaseConfig:
+    DB_HOST: "nico-site-pg-primary"
+    DB_PORT: "5432"
+    DB_NAME: "nico"
+
+nico-bmc-proxy:
+  enabled: true
+nico-dhcp:
+  enabled: true
+nico-dns:
+  enabled: true
+  replicas: 2
+nico-dsx-exchange-consumer:
+  enabled: true
+  certificate:
+    serviceName: nico-dsx-consumer
+  env:
+    NICO_DSX_CONSUMER__MQTT__ENDPOINT: nats
+    NICO_DSX_CONSUMER__MQTT__PORT: "1883"
+    NICO_DSX_CONSUMER__MQTT__TOPIC_PREFIX: "BMS/v1"
+    NICO_DSX_CONSUMER__CARBIDE_API__API_URL: "https://nico-api:1079"
+    RUST_BACKTRACE: "1"
+nico-hardware-health:
+  enabled: true
+nico-pxe:
+  enabled: true
+  bootArtifactContainers: []
+  # Uncomment and configure for your architecture:
+  # - name: boot-artifacts-x86-64
+  #   image: <registry>/boot-artifacts-x86_64:latest
+  #   command: ["sh", "-c", "cp -r /x86_64 /boot-artifacts/blobs/internal"]
+  # - name: boot-artifacts-aarch64
+  #   image: <registry>/boot-artifacts-aarch64:latest
+  #   command: ["sh", "-c", "cp -r /aarch64 /apt /firmware /boot-artifacts/blobs/internal"]
+nico-ssh-console-rs:
+  enabled: true
+unbound:
+  enabled: false
+
+nico-flow:
+  enabled: true
+  createNamespace: false
+  flowEnv: production
+  images:
+    flow:
+      repository: quay.io/fdupont-redhat/nico-flow
+      tag: latest
+    psm:
+      repository: quay.io/fdupont-redhat/nico-psm
+      tag: latest
+    nsm:
+      repository: quay.io/fdupont-redhat/nico-nsm
+      tag: latest
+  database:
+    host: nico-site-pg-primary
+    port: 5432
+    certPath: ""
+    flow:
+      name: flow
+      credentialsSecret: nico-site-pg-pguser-nico
+    psm:
+      name: psm
+      credentialsSecret: nico-site-pg-pguser-nico
+    nsm:
+      name: nsm
+      credentialsSecret: nico-site-pg-pguser-nico
+  nicoCoreApi:
+    url: nico-api:1079
+  temporal:
+    host: temporal-frontend.nico-rest
+    port: 7233
+    namespace: flow
+    enableTls: true
+    serverName: interservice.server.temporal.local
+    certPath: /var/run/secrets/temporal-client-certs
+  temporalCert:
+    enabled: true
+    issuerRef:
+      kind: ClusterIssuer
+      name: nico-rest-ca-issuer
+      group: cert-manager.io
+  vault:
+    address: https://vault.nico-system:8200
+    psmTokenSecret: psm-vault-token
+    nsmTokenSecret: nsm-vault-token
+  certificate:
+    apiIdentity:
+      namespace: nico-system
+      serviceName: nico-flow
+  imagePullSecret:
+    create: false

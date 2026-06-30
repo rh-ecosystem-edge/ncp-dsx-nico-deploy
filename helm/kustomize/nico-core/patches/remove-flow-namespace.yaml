@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Remove the Namespace resource rendered by nico-flow. The Makefile
+# creates the namespace via oc/kubectl before helm install, and Helm's
+# --create-namespace adds its own ownership labels. A second Namespace
+# resource from nico-flow conflicts with Helm's ownership.
+$patch: delete
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nico-system

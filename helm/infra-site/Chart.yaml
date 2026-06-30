@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: nvidia-infra-controller-site-infra
+description: >-
+  Red Hat infrastructure add-ons for NVIDIA Infra Controller site profile.
+  Deploys Crunchy PostgreSQL, Vault HA (3-node Raft) with Transit auto-unseal,
+  NATS, ESO secrets, and site-issuer ClusterIssuer. Installed before the
+  upstream nico and nico-rest-site-agent charts.
+type: application
+version: 0.3.0
+appVersion: "2.0.0-pr"
+
+dependencies:
+  - name: vault
+    version: "0.33.0"
+    repository: "https://helm.releases.hashicorp.com"
+  - name: nats
+    version: "1.3.2"
+    repository: "https://nats-io.github.io/k8s/helm/charts/"

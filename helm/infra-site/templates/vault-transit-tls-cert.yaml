@@ -1,0 +1,34 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+TLS certificate for the Transit Vault (auto-unseal service).
+Issued by site-issuer before the Transit Vault starts.
+*/}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vault-transit-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-8"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  secretName: vault-transit-tls
+  duration: 720h0m0s
+  renewBefore: 360h0m0s
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+  dnsNames:
+    - vault-transit
+    - vault-transit.{{ .Release.Namespace }}
+    - vault-transit.{{ .Release.Namespace }}.svc
+    - vault-transit.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    name: site-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+keycloakInstance:
+  enabled: true
+  namespace: rhbk-operator
+  org: ncx
+  admin:
+    username: admin
+    password: ""
+
+postgresql:
+  enabled: true
+  instances: 1
+  storage:
+    size: 5Gi
+
+nico-rest-common:
+  secrets:
+    keycloakClientSecret:
+      value: ""
+
+nico-rest-cert-manager:
+  enabled: true

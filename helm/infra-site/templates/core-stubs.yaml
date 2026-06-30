@@ -1,0 +1,21 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Placeholder secrets for Core tier. The vault-init Job patches
+nico-vault-approle-tokens with real AppRole credentials after
+Vault is initialized. PSM/NSM tokens and nico-roots are created
+by vault-init — no stubs needed here.
+*/}}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nico-vault-approle-tokens
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  VAULT_ROLE_ID: ""
+  VAULT_SECRET_ID: ""

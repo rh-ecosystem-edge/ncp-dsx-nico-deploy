@@ -1,0 +1,19 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+site-issuer — CA-backed ClusterIssuer for bootstrapping Vault TLS certs
+before Vault is running. Matches upstream's site-issuer pattern.
+Uses the same CA as nico-rest-ca-issuer (nico-root-ca-secret).
+*/}}
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: site-issuer
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-9"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  ca:
+    secretName: nico-root-ca-secret

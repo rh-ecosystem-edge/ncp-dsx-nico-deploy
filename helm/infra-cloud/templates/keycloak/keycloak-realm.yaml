@@ -7,7 +7,7 @@ Uses RHBK operator KeycloakRealmImport CRD instead of upstream's ConfigMap appro
 */}}
 {{- if .Values.keycloakInstance.enabled }}
 {{- $org := .Values.keycloakInstance.org | default "ncx" }}
-{{- $clientSecret := index .Values "nico-rest-common" "secrets" "keycloakClientSecret" "value" }}
+{{- $clientSecret := index .Values "nico-rest-common" "secrets" "keycloakClientSecret" "value" | required "nico-rest-common.secrets.keycloakClientSecret.value must be set" }}
 apiVersion: k8s.keycloak.org/v2beta1
 kind: KeycloakRealmImport
 metadata:

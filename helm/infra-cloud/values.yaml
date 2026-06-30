@@ -18,7 +18,8 @@ postgresql:
 nico-rest-common:
   secrets:
     keycloakClientSecret:
-      value: ""
+      # Must match nico-rest values. Override with --set for production.
+      value: "MUST-BE-OVERRIDDEN"
 
 nico-rest-cert-manager:
   enabled: true

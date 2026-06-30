@@ -27,7 +27,8 @@ nico-rest-common:
       username: nico
       password: ""
     keycloakClientSecret:
-      value: ""
+      # Must match infra-cloud values. Override with --set for production.
+      value: "MUST-BE-OVERRIDDEN"
     temporalEncryptionKey:
       value: ""
     imagePullSecret:

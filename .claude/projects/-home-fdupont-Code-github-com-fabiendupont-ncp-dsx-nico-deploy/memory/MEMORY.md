@@ -1,0 +1,4 @@
+- [PostgreSQL image](feedback_postgres-image.md) — Use registry.redhat.io/rhel10/postgresql-18:latest
+- [Use podman](feedback_use-podman.md) — Always use podman, never docker CLI
+- [Temporal on OpenShift](feedback_temporal-openshift.md) — Official Temporal chart v1.2.0 requires specific overrides for OpenShift and TLS
+- [Next session plan](project_next-session-plan.md) — Add Vault for site-agent PKI, complete site bootstrap e2e

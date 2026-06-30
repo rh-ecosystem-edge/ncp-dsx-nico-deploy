@@ -51,7 +51,7 @@ spec:
       secret: keycloak-admin-secret
   db:
     vendor: postgres
-    host: nico-cloud-pg-primary
+    host: nico-cloud-pg-primary.nico-rest.svc
     port: 5432
     database: keycloak
     usernameSecret:

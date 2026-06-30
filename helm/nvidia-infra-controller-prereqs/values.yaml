@@ -27,7 +27,7 @@ rhbk:
 
 externalSecrets:
   enabled: true
-  channel: stable
+  channel: stable-v1
   source: redhat-operators
   sourceNamespace: openshift-marketplace
   installPlanApproval: Automatic

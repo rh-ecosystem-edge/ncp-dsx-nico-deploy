@@ -24,7 +24,7 @@ DOCKERFILE_DIR := docker/ubi
 CLUSTER_DOMAIN ?= $(shell oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
 
 # Kustomize post-renderer for upstream chart patches
-POST_RENDERER := helm/plugins/kustomize-post-renderer/render.sh
+POST_RENDERER := $(CURDIR)/helm/plugins/kustomize-post-renderer/render.sh
 CLOUD_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-rest
 SITE_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-core
 

@@ -40,9 +40,10 @@ make undeploy
 
 ## CLI Tools
 
-Two CLI images for interacting with NICo:
+**nicocli** — REST API client (auto-generated from OpenAPI, site/org management).
 
-**nicocli** — REST API client (auto-generated from OpenAPI, site/org management):
+Requires `$TOKEN` from the Authentication section above. The CLI is
+bundled in the API pod:
 
 ```bash
 oc run nicocli --rm -it --restart=Never \
@@ -53,13 +54,18 @@ oc run nicocli --rm -it --restart=Never \
      site list --org ncx
 ```
 
-**nico-admin-cli** — Core gRPC client (bare metal management, host discovery):
+To run as a standalone pod via `oc run`, build and push the `nicocli`
+image first (`docker/ubi/Dockerfile.nicocli`), then use the image with
+`--base-url https://nico-rest-api:8388`. Note: OpenShift requires
+security context overrides (`runAsNonRoot`, `drop: ALL`, etc.) for the
+restricted PodSecurity policy.
+
+**nico-admin-cli** — Core gRPC client (bare metal management, host discovery).
+Only relevant after deploying the site profile:
 
 ```bash
-oc run nico-admin-cli --rm -it --restart=Never \
-  -n nvidia-infra-controller-site \
-  --image=<registry>/nico-admin-cli:latest \
-  -- site-explorer get-report
+oc exec deploy/nico-core -n nvidia-infra-controller-site -- \
+  /app/nico-admin-cli site-explorer get-report
 ```
 
 ## Container Images

@@ -50,7 +50,7 @@ server:
         optional: true
     - name: temporal-pg-ca
       secret:
-        secretName: nico-cloud-pg-cluster-cert
+        secretName: nico-cloud-pg-server-tls
         items:
           - key: ca.crt
             path: ca.crt
@@ -188,7 +188,7 @@ admintools:
         secretName: temporal-server-certs
     - name: temporal-pg-ca
       secret:
-        secretName: nico-cloud-pg-cluster-cert
+        secretName: nico-cloud-pg-server-tls
         items:
           - key: ca.crt
             path: ca.crt

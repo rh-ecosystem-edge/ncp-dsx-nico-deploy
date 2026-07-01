@@ -19,6 +19,10 @@ metadata:
     "helm.sh/hook-weight": "-10"
 spec:
   postgresVersion: 18
+  customTLSSecret:
+    name: nico-cloud-pg-server-tls
+  customReplicationTLSSecret:
+    name: nico-cloud-pg-replication-tls
   instances:
     - name: instance1
       replicas: {{ .Values.postgresql.instances | default 1 }}
@@ -79,4 +83,68 @@ data:
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
     CREATE EXTENSION IF NOT EXISTS "pg_trgm";
     CREATE EXTENSION IF NOT EXISTS "btree_gin";
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nico-cloud-pg-server-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-cloud-infra.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-11"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  secretName: nico-cloud-pg-server-tls
+  duration: 2160h
+  renewBefore: 360h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - server auth
+    - client auth
+  dnsNames:
+    - nico-cloud-pg-primary
+    - nico-cloud-pg-primary.{{ .Release.Namespace }}
+    - nico-cloud-pg-primary.{{ .Release.Namespace }}.svc
+    - nico-cloud-pg-primary.{{ .Release.Namespace }}.svc.cluster.local
+    - nico-cloud-pg-replicas
+    - nico-cloud-pg-replicas.{{ .Release.Namespace }}
+    - nico-cloud-pg-replicas.{{ .Release.Namespace }}.svc
+    - nico-cloud-pg-replicas.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    name: nico-rest-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nico-cloud-pg-replication-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-cloud-infra.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-11"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  secretName: nico-cloud-pg-replication-tls
+  duration: 2160h
+  renewBefore: 360h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - client auth
+  commonName: _crunchyrepl
+  dnsNames:
+    - nico-cloud-pg-primary
+    - nico-cloud-pg-primary.{{ .Release.Namespace }}.svc
+  issuerRef:
+    name: nico-rest-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
 {{- end }}

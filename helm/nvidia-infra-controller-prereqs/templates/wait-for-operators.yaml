@@ -83,6 +83,20 @@ spec:
                 sleep 5
               done
               echo "External Secrets CRDs available"
+              echo "Waiting for ExternalSecretsConfig CRD..."
+              until oc get crd externalsecretsconfigs.operator.openshift.io > /dev/null 2>&1; do
+                sleep 5
+              done
+              echo "Creating ExternalSecretsConfig operand..."
+              cat <<EOCFG | oc apply -f -
+              apiVersion: operator.openshift.io/v1alpha1
+              kind: ExternalSecretsConfig
+              metadata:
+                name: cluster
+              spec:
+                managementState: Managed
+              EOCFG
+              echo "ExternalSecretsConfig created — ESO controller will deploy"
               {{- end }}
               echo "All operator CRDs ready"
 {{- end }}

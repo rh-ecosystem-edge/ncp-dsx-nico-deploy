@@ -24,7 +24,9 @@ DOCKERFILE_DIR := docker/ubi
 CLUSTER_DOMAIN ?= $(shell oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
 
 # Kustomize post-renderer for upstream chart patches
-POST_RENDERER := $(CURDIR)/helm/plugins/kustomize-post-renderer/render.sh
+POST_RENDERER_DIR := $(CURDIR)/helm/plugins/kustomize-post-renderer
+POST_RENDERER := kustomize-post-renderer
+export PATH := $(POST_RENDERER_DIR):$(PATH)
 CLOUD_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-rest
 SITE_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-core
 
@@ -193,6 +195,26 @@ deploy-flow:
 		-f helm/values/nico-core.yaml
 
 deploy-all-site: deploy-site-infra deploy-site deploy-flow
+
+# =============================================================================
+# CRC (single-node) — overrides for local development on CodeReady Containers
+# =============================================================================
+
+CRC_VAULT_OVERRIDES := --set vault.server.ha.replicas=1 --set 'vault.server.affinity='
+
+deploy-cloud-infra-crc: helm-dep-build
+	helm upgrade --install -n nico-rest nico-rest-infra \
+		helm/infra-cloud/ \
+		--create-namespace --wait --timeout 10m
+
+deploy-site-infra-crc: helm-dep-build
+	helm upgrade --install -n nico-system nico-site-infra \
+		helm/infra-site/ \
+		--create-namespace --wait --timeout 15m \
+		$(CRC_VAULT_OVERRIDES)
+
+deploy-all-cloud-crc: deploy-prereqs deploy-cloud-infra-crc deploy-temporal deploy-cloud
+deploy-all-site-crc: deploy-site-infra-crc deploy-site deploy-flow
 
 # =============================================================================
 # Status and Cleanup

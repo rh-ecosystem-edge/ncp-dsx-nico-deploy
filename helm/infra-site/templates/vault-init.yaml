@@ -95,16 +95,17 @@ spec:
             - /bin/sh
             - -c
             - |
-              echo "Waiting for Vault at ${VAULT_ADDR}..."
+              echo "Waiting for Vault to be unsealed (postStart handles init+unseal)..."
               until vault status -tls-skip-verify -format=json 2>/dev/null \
-                | grep -q '"initialized"'; do
-                echo "  Vault not reachable, retrying in 5s..."
+                | grep -q '"sealed".*false'; do
+                echo "  Vault still sealed, retrying in 5s..."
                 sleep 5
               done
-              echo "Vault is reachable"
+              echo "Vault is unsealed"
       containers:
         # ---------------------------------------------------------------
-        # Container 1: Init, unseal, configure Vault
+        # Container 1: Configure Vault (PKI, AppRole, KV seeding)
+        # postStart already handled init + unseal
         # ---------------------------------------------------------------
         - name: configure
           image: {{ .Values.vaultConfig.configJob.vaultImage | quote }}
@@ -123,39 +124,16 @@ spec:
             - |
               set -e
 
-              # ---- Init (transit auto-unseal handles unsealing) ----
-              echo "Waiting for Vault to be unsealed (transit auto-unseal)..."
-              until vault status -format=json 2>/dev/null | grep -q '"sealed".*false'; do
-                if vault status -format=json 2>/dev/null | grep -q '"initialized".*false'; then
-                  echo "Initializing Vault with recovery keys (transit auto-unseal)..."
-                  INIT_OUTPUT=$(vault operator init -recovery-shares=1 -recovery-threshold=1 -format=json)
-                  ROOT_TOKEN=$(echo "$INIT_OUTPUT" | sed -n 's/.*"root_token":"\([^"]*\)".*/\1/p')
-                  RECOVERY_KEY=$(echo "$INIT_OUTPUT" | sed -n 's/.*"recovery_keys_b64":\["\([^"]*\)".*/\1/p')
-                  echo "$ROOT_TOKEN" > /vault-data/root-token
-                  echo "$RECOVERY_KEY" > /vault-data/recovery-key
-                  echo "Vault initialized, waiting for auto-unseal..."
-                fi
-                sleep 5
-              done
-              echo "Vault is unsealed"
-
-              if [ -f /vault-data/root-token ]; then
-                export VAULT_TOKEN=$(cat /vault-data/root-token)
-              else
-                echo "Vault was already initialized — reading token from existing secret"
-                APISERVER="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
-                SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-                ROOT_TOKEN=$(wget -q -O - \
-                  --header "Authorization: Bearer ${SA_TOKEN}" \
-                  --no-check-certificate \
-                  "${APISERVER}/api/v1/namespaces/{{ .Release.Namespace }}/secrets/vault-unseal-secret" \
-                  | sed -n 's/.*"root-token": *"\([^"]*\)".*/\1/p' \
-                  | head -1)
-                export VAULT_TOKEN=$(echo "$ROOT_TOKEN" | base64 -d)
-              fi
-
-              echo "Waiting for Raft leader election..."
-              sleep 15
+              # Read root token from the Secret created by postStart
+              APISERVER="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+              SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+              ROOT_TOKEN=$(wget -q -O - \
+                --header "Authorization: Bearer ${SA_TOKEN}" \
+                --no-check-certificate \
+                "${APISERVER}/api/v1/namespaces/{{ .Release.Namespace }}/secrets/vault-unseal-secret" \
+                | sed -n 's/.*"root-token": *"\([^"]*\)".*/\1/p' \
+                | head -1)
+              export VAULT_TOKEN=$(echo "$ROOT_TOKEN" | base64 -d)
 
               # ---- Enable KV v2 ----
               echo "Enabling KV v2 at {{ .Values.vaultConfig.kvMount }}/..."
@@ -346,17 +324,7 @@ spec:
               echo "Waiting for configure container..."
               until [ -f /vault-data/done ]; do sleep 2; done
 
-              # ---- vault-unseal-secret (recovery key + root token) ----
-              if [ -f /vault-data/root-token ]; then
-                ROOT_TOKEN=$(cat /vault-data/root-token)
-                RECOVERY_KEY=$(cat /vault-data/recovery-key 2>/dev/null || echo "")
-                kubectl create secret generic vault-unseal-secret -n "$NS" \
-                  --from-literal=recovery-key="$RECOVERY_KEY" \
-                  --from-literal=root-token="$ROOT_TOKEN" \
-                  --from-literal=token="$ROOT_TOKEN" \
-                  --dry-run=client -o yaml | kubectl apply -f -
-                echo "vault-unseal-secret created/updated"
-              fi
+              # vault-unseal-secret is created by Vault's postStart hook
 
               {{- if .Values.vaultConfig.approle.enabled }}
               # ---- nico-vault-approle-tokens ----

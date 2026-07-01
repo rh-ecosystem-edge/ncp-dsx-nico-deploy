@@ -34,7 +34,6 @@ vault:
       initialDelaySeconds: 60
     extraEnvironmentVars:
       VAULT_CACERT: /vault/userconfig/vault-tls/ca.crt
-      VAULT_TRANSIT_SEAL_TOKEN_FILE: /vault/userconfig/vault-transit-token/token
     volumes:
       - name: vault-tls
         secret:
@@ -42,18 +41,53 @@ vault:
       - name: vault-raft-tls
         secret:
           secretName: vault-raft-tls
-      - name: vault-transit-token
-        secret:
-          secretName: vault-transit-token
-          optional: true
     volumeMounts:
       - mountPath: /vault/userconfig/vault-tls
         name: vault-tls
       - mountPath: /vault/userconfig/vault-raft-tls
         name: vault-raft-tls
-      - mountPath: /vault/userconfig/vault-transit-token
-        name: vault-transit-token
-        readOnly: true
+    postStart:
+      - /bin/sh
+      - -c
+      - |
+        export VAULT_ADDR=https://127.0.0.1:8200
+        export VAULT_SKIP_VERIFY=true
+        APISERVER=https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}
+        SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+        NS=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+
+        # Wait for Vault to be listening
+        until vault status -format=json 2>/dev/null | grep -q '"initialized"'; do
+          sleep 2
+        done
+
+        if vault status -format=json 2>/dev/null | grep -q '"initialized".*false'; then
+          # First boot — initialize and unseal
+          INIT=$(vault operator init -key-shares=1 -key-threshold=1 -format=json)
+          UNSEAL_KEY=$(echo "$INIT" | sed -n 's/.*"unseal_keys_b64":\["\([^"]*\)".*/\1/p')
+          ROOT_TOKEN=$(echo "$INIT" | sed -n 's/.*"root_token":"\([^"]*\)".*/\1/p')
+          vault operator unseal "$UNSEAL_KEY"
+
+          # Store keys in K8s Secret via API
+          KEY_B64=$(echo -n "$UNSEAL_KEY" | base64)
+          TOKEN_B64=$(echo -n "$ROOT_TOKEN" | base64)
+          wget -q -O /dev/null --method=POST \
+            --header="Authorization: Bearer ${SA_TOKEN}" \
+            --header="Content-Type: application/json" \
+            --no-check-certificate \
+            --body-data="{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"vault-unseal-secret\",\"namespace\":\"${NS}\"},\"type\":\"Opaque\",\"data\":{\"unseal-key\":\"${KEY_B64}\",\"root-token\":\"${TOKEN_B64}\",\"token\":\"${TOKEN_B64}\"}}" \
+            "${APISERVER}/api/v1/namespaces/${NS}/secrets" 2>/dev/null || true
+        elif vault status -format=json 2>/dev/null | grep -q '"sealed".*true'; then
+          # Already initialized — read unseal key from Secret and unseal
+          UNSEAL_KEY=$(wget -q -O - \
+            --header="Authorization: Bearer ${SA_TOKEN}" \
+            --no-check-certificate \
+            "${APISERVER}/api/v1/namespaces/${NS}/secrets/vault-unseal-secret" 2>/dev/null \
+            | sed -n 's/.*"unseal-key": *"\([^"]*\)".*/\1/p' | head -1)
+          if [ -n "$UNSEAL_KEY" ]; then
+            vault operator unseal "$(echo "$UNSEAL_KEY" | base64 -d)" 2>/dev/null || true
+          fi
+        fi
     shareProcessNamespace: true
     extraContainers:
       - name: vault-cert-reload
@@ -144,14 +178,6 @@ vault:
             }
           }
 
-          seal "transit" {
-            address     = "https://vault-transit:8200"
-            token       = ""
-            key_name    = "autounseal"
-            mount_path  = "transit"
-            tls_ca_cert = "/vault/userconfig/vault-tls/ca.crt"
-          }
-
           telemetry {
             prometheus_retention_time = "30s"
             disable_hostname          = true
@@ -191,6 +217,8 @@ vaultConfig:
 # =============================================================================
 nats:
   fullnameOverride: nats
+  natsBox:
+    enabled: false
   config:
     cluster:
       enabled: false

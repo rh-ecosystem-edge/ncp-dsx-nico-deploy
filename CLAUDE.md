@@ -16,13 +16,6 @@ Keycloak, Vault HA, ESO, OpenShift Routes).
 
 Vendored as git submodule at `helm/vendor/infra-controller`.
 
-## Related Repos (we own)
-
-| Repo | Purpose |
-|---|---|
-| `fabiendupont/nvidia-ncx-infra-controller-operator` | Kubernetes operator (alternative deployment path, same images) |
-| `fabiendupont/nvidia-ncx-infra-controller-ui` | NCP Portal UI (React/PatternFly) |
-
 ## Architecture
 
 ### Design Principle

@@ -97,21 +97,26 @@ nico-api:
 
 nico-bmc-proxy:
   enabled: true
+  envFrom:
+    vaultApproleTokens:
+      secretName: nico-vault-approle-tokens
+    vaultToken:
+      secretName: vault-unseal-secret
+    vaultClusterInfo:
+      configMapName: vault-cluster-info
+    databaseCredentials:
+      secretName: nico-site-pg-pguser-nico
+    databaseConfig:
+      configMapName: nico-system-nico-database-config
 nico-dhcp:
   enabled: true
 nico-dns:
   enabled: true
   replicas: 2
+  # Disabled upstream — binary not ready for production (requires forge-roots
+  # volume mount not present in the chart template)
 nico-dsx-exchange-consumer:
-  enabled: true
-  certificate:
-    serviceName: nico-dsx-consumer
-  env:
-    NICO_DSX_CONSUMER__MQTT__ENDPOINT: nats
-    NICO_DSX_CONSUMER__MQTT__PORT: "1883"
-    NICO_DSX_CONSUMER__MQTT__TOPIC_PREFIX: "BMS/v1"
-    NICO_DSX_CONSUMER__CARBIDE_API__API_URL: "https://nico-api:1079"
-    RUST_BACKTRACE: "1"
+  enabled: false
 nico-hardware-health:
   enabled: true
 nico-pxe:

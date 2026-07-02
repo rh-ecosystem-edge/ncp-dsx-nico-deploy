@@ -2,10 +2,8 @@
 SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 
-Placeholder secrets for Core tier. The vault-init Job patches
-nico-vault-approle-tokens with real AppRole credentials after
-Vault is initialized. PSM/NSM tokens and nico-roots are created
-by vault-init — no stubs needed here.
+Placeholder secrets for Core tier. `make vault-init` patches
+nico-vault-approle-tokens with real AppRole credentials.
 */}}
 ---
 apiVersion: v1

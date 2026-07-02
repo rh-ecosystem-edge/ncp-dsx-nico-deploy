@@ -37,4 +37,4 @@ USER 1001
 
 EXPOSE 50051
 
-ENTRYPOINT ["/app/psm"]
+ENTRYPOINT ["/app/psm", "serve"]

@@ -17,11 +17,6 @@ patches:
     target:
       kind: Job
       name: nico-rest-db-migration-latest
-  # Add "db init_migrate" args to run migrations
-  - path: patches/fix-db-migrate-args.yaml
-    target:
-      kind: Job
-      name: nico-rest-db-migration-latest
   # Wait for Keycloak before starting API (JWKS fetch race)
   - path: patches/fix-api-wait-keycloak.yaml
     target:

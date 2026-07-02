@@ -46,6 +46,12 @@ patches:
       kind: Deployment
       name: nico-api
 
+  # BMC proxy: fix Crunchy secret key (user not username)
+  - path: patches/fix-bmc-proxy-secret-keys.yaml
+    target:
+      kind: Deployment
+      name: nico-bmc-proxy
+
   # Flow deployment: fix Crunchy secret key (user not username)
   - path: patches/fix-flow-secret-keys.yaml
     target:

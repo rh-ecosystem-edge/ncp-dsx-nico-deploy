@@ -22,45 +22,74 @@ Creates the self-signed CA chain and ClusterIssuers.
 make deploy-prereqs
 ```
 
-### 2. Cloud Profile
+### 2. Cloud Infrastructure
 
-Deploys the management plane: PostgreSQL, Keycloak, Temporal, and the
-NICo REST API into the `nico-rest` namespace.
-
-```bash
-make deploy-all-cloud
-```
-
-Or step by step:
+Deploys PostgreSQL (nico, temporal, keycloak databases), RHBK Keycloak
+with realm import, Temporal server, OpenShift Routes, and ESO secrets.
 
 ```bash
-make deploy-cloud-infra   # PG, Keycloak, Routes, ESO
-make deploy-temporal       # Temporal server
-make deploy-cloud          # Upstream nico-rest chart
+make deploy-cloud-infra        # or deploy-cloud-infra-crc for single-node
 ```
 
-### 3. Site Profile
+### 3. NICo REST API
 
-Deploys the site tier: PostgreSQL, Vault HA, NATS, Core services, and the
-site-agent into the `nico-system` namespace.
+Installs the upstream `nico-rest` chart with values overrides and
+kustomize patches (Keycloak wait, CA trust, SCC fixes).
 
 ```bash
-make deploy-all-site
+make deploy-cloud
 ```
 
-Or step by step:
+### 4. Site Infrastructure
+
+Deploys PostgreSQL (nico, flow, psm, nsm databases), Vault (HA Raft for
+production, standalone for CRC), NATS, and ESO secrets.
 
 ```bash
-make deploy-site-infra                   # PG, Vault HA, NATS, ESO
-make deploy-site                         # Upstream Core chart
-make deploy-site-agent SITE_NAME=my-site # Register site + deploy agent
-make deploy-flow                         # Flow rack orchestrator
+make deploy-site-infra         # HA Raft (3 nodes, production)
+make deploy-site-infra-crc     # standalone (single-node, CRC)
 ```
 
-To deploy a site-agent for an existing site (skips registration):
+### 5. Initialize Vault
+
+One-time step. Initializes Vault, unseals it, stores the unseal key in a
+Secret (for postStart auto-unseal on restarts), then configures: PKI engine
+(nicoca), AppRole auth, KV seeding, Flow tokens, and the `vault-nico-issuer`
+ClusterIssuer.
+
+For production, replace the postStart unseal with cloud KMS (AWS/GCP/Azure)
+or an external Transit Vault. See `helm/infra-site/values.yaml` for details.
+
+```bash
+make vault-init
+```
+
+### 6. NICo Core
+
+Installs the upstream `nico` chart with values overrides and kustomize
+patches (Crunchy secret keys, SCC fixes, migration fixes).
+
+```bash
+make deploy-site
+```
+
+### 7. Register a Site and Deploy Site-Agent
+
+```bash
+make deploy-site-agent SITE_NAME=my-site
+```
+
+To deploy to an existing site (skips registration):
 
 ```bash
 make deploy-site-agent SITE_ID=<existing-uuid>
+```
+
+### Full Deploy (all steps)
+
+```bash
+make deploy-all-cloud          # steps 1-3
+make deploy-all-site           # steps 4-7 (without site-agent)
 ```
 
 ### Status
@@ -84,7 +113,7 @@ layer provides only Red Hat-specific infrastructure:
 helm/
   vendor/infra-controller/           Upstream (git submodule, read-only)
   values/                            Values overrides for upstream charts
-  infra-cloud/                       Red Hat add-ons: Crunchy PG, Keycloak, Routes, ESO
+  infra-cloud/                       Red Hat add-ons: Crunchy PG, Keycloak, Temporal, Routes, ESO
   infra-site/                        Red Hat add-ons: Vault HA, PG, NATS, ESO
   kustomize/                         Patches for upstream templates (SCC, Crunchy keys)
   nvidia-infra-controller-prereqs/   OLM operator subscriptions
@@ -92,19 +121,22 @@ helm/
 
 | Namespace | What deploys there |
 |---|---|
-| `nico-rest` | REST API, Temporal, PG (cloud), Routes |
+| `nico-rest` | REST API, Temporal, PG (cloud), Keycloak Routes |
 | `nico-system` | Core services, site-agent, Flow, Vault HA, PG (site), NATS |
 | `rhbk-operator` | Keycloak (RHBK operator) |
 
 ### Vault
 
-3-node HA Raft cluster with Transit auto-unseal. TLS via cert-manager.
-Vault PKI engine (`nicoca`) issues certificates for Core services via
-the `vault-nico-issuer` ClusterIssuer.
+3-node HA Raft cluster with TLS via cert-manager. Vault PKI engine
+(`nicoca`) issues certificates for Core services via the `vault-nico-issuer`
+ClusterIssuer. Initialized and unsealed by `make vault-init` (one-time step).
+PostStart hook auto-unseals on pod restarts from a stored unseal key.
+
+For production, replace with cloud KMS or external Transit Vault.
 
 ### PostgreSQL
 
-Two consolidated Crunchy PostgresCluster instances:
+Two consolidated Crunchy PostgresCluster instances with cert-manager TLS:
 - **Cloud** (PG18): `nico`, `temporal`, `temporal_visibility`, `keycloak` databases
 - **Site** (PG15): `nico`, `flow`, `psm`, `nsm` databases
 

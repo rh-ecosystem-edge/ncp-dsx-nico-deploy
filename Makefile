@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 .PHONY: docker-build-ubi docker-push-ubi helm-dep-build helm-lint helm-template
-.PHONY: deploy-prereqs deploy-cloud-infra deploy-temporal deploy-cloud
-.PHONY: deploy-site-infra deploy-site deploy-site-agent deploy-flow
+.PHONY: deploy-prereqs deploy-cloud-infra deploy-cloud
+.PHONY: deploy-site-infra vault-init deploy-site deploy-site-agent deploy-flow
 .PHONY: deploy-all-cloud deploy-all-site status undeploy
 
 # Upstream source repo (git submodule, read-only)
@@ -107,12 +107,6 @@ deploy-cloud-infra: helm-dep-build
 		helm/infra-cloud/ \
 		--create-namespace --wait --timeout 10m
 
-deploy-temporal:
-	helm repo add temporal https://go.temporal.io/helm-charts 2>/dev/null || true
-	helm upgrade --install -n nico-rest temporal temporal/temporal \
-		--version 1.2.0 --wait --timeout 10m \
-		-f helm/values/temporal.yaml
-
 deploy-cloud:
 	helm upgrade --install -n nico-rest nico-rest \
 		$(NICO_REST_CHART) --wait --timeout 10m \
@@ -120,7 +114,7 @@ deploy-cloud:
 		--set nico-rest-api.config.keycloak.externalBaseURL=https://keycloak-rhbk-operator.$(CLUSTER_DOMAIN) \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(CLOUD_KUSTOMIZE)
 
-deploy-all-cloud: deploy-prereqs deploy-cloud-infra deploy-temporal deploy-cloud
+deploy-all-cloud: deploy-prereqs deploy-cloud-infra deploy-cloud
 
 # =============================================================================
 # Deploy — Site Profile
@@ -129,7 +123,79 @@ deploy-all-cloud: deploy-prereqs deploy-cloud-infra deploy-temporal deploy-cloud
 deploy-site-infra: helm-dep-build
 	helm upgrade --install -n nico-system nico-site-infra \
 		helm/infra-site/ \
-		--create-namespace --wait --timeout 15m
+		--create-namespace --timeout 15m
+
+vault-init:
+	@echo "=== Initializing Vault (one-time) ===" && \
+	NS=nico-system && \
+	V=vault-0 && \
+	echo "Waiting for Vault pod..." && \
+	until oc get pod $$V -n $$NS -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running; do sleep 5; done && \
+	if oc exec $$V -n $$NS -- vault status -tls-skip-verify -format=json 2>/dev/null | grep -q '"initialized".*true'; then \
+		echo "Vault already initialized" && \
+		if oc exec $$V -n $$NS -- vault status -tls-skip-verify -format=json 2>/dev/null | grep -q '"sealed".*true'; then \
+			echo "Unsealing..." && \
+			UK=$$(oc get secret vault-unseal-secret -n $$NS -o jsonpath='{.data.unseal-key}' | base64 -d) && \
+			oc exec $$V -n $$NS -- vault operator unseal -tls-skip-verify "$$UK"; \
+		fi && \
+		RT=$$(oc get secret vault-unseal-secret -n $$NS -o jsonpath='{.data.root-token}' | base64 -d); \
+	else \
+		echo "Initializing Vault..." && \
+		INIT=$$(oc exec $$V -n $$NS -- vault operator init -tls-skip-verify -key-shares=1 -key-threshold=1 -format=json) && \
+		UK=$$(echo "$$INIT" | python3 -c "import json,sys; print(json.load(sys.stdin)['unseal_keys_b64'][0])") && \
+		RT=$$(echo "$$INIT" | python3 -c "import json,sys; print(json.load(sys.stdin)['root_token'])") && \
+		echo "Unsealing..." && \
+		oc exec $$V -n $$NS -- vault operator unseal -tls-skip-verify "$$UK" && \
+		oc create secret generic vault-unseal-secret -n $$NS \
+			--from-literal=unseal-key="$$UK" --from-literal=root-token="$$RT" --from-literal=token="$$RT" \
+			--dry-run=client -o yaml | oc apply -f - && \
+		echo "Restarting Vault for postStart auto-unseal..." && \
+		oc delete pod $$V -n $$NS && sleep 10 && \
+		until oc exec $$V -n $$NS -- vault status -tls-skip-verify -format=json 2>/dev/null | grep -q '"sealed".*false'; do sleep 5; done; \
+	fi && \
+	echo "=== Configuring Vault ===" && \
+	oc exec $$V -n $$NS -- sh -c "export VAULT_TOKEN=$$RT VAULT_SKIP_VERIFY=true && \
+		vault secrets enable -path=secrets kv-v2 2>/dev/null || true && \
+		vault kv put secrets/machines/all_dpus/factory_default/bmc-metadata-items/root UsernamePassword='{\"username\":\"root\",\"password\":\"0penBmc\"}' && \
+		vault kv put secrets/machines/all_dpus/factory_default/uefi-metadata-items/auth UsernamePassword='{\"username\":\"\",\"password\":\"bluefield\"}' && \
+		vault secrets enable -path=nicoca pki 2>/dev/null || true && \
+		vault secrets tune -max-lease-ttl=87600h nicoca" && \
+	echo "Importing CA into Vault PKI..." && \
+	CA_CERT=$$(oc get secret nico-root-ca-secret -n cert-manager -o jsonpath='{.data.tls\.crt}' | base64 -d) && \
+	CA_KEY=$$(oc get secret nico-root-ca-secret -n cert-manager -o jsonpath='{.data.tls\.key}' | base64 -d) && \
+	echo "$$CA_CERT" > /tmp/vault-ca-bundle.pem && echo "$$CA_KEY" >> /tmp/vault-ca-bundle.pem && \
+	oc cp /tmp/vault-ca-bundle.pem $$NS/$$V:/tmp/ca-bundle.pem -c vault && rm /tmp/vault-ca-bundle.pem && \
+	oc exec $$V -n $$NS -- sh -c "export VAULT_TOKEN=$$RT VAULT_SKIP_VERIFY=true && \
+		vault write nicoca/config/ca pem_bundle=@/tmp/ca-bundle.pem && \
+		vault write nicoca/roles/nico-cluster allow_any_name=true allowed_uri_sans='spiffe://*' max_ttl=720h ttl=720h key_type=ec key_bits=256 require_cn=false use_csr_common_name=true && \
+		vault auth enable kubernetes 2>/dev/null || true && \
+		vault write auth/kubernetes/config kubernetes_host=https://\$$KUBERNETES_SERVICE_HOST:\$$KUBERNETES_SERVICE_PORT && \
+		echo 'path \"nicoca/sign/nico-cluster\" { capabilities = [\"create\", \"update\"] }' | vault policy write cert-manager-nico-policy - && \
+		vault write auth/kubernetes/role/cert-manager-nico-issuer bound_service_account_names=cert-manager-vault-nicoca-issuer bound_service_account_namespaces=cert-manager policies=cert-manager-nico-policy ttl=1h && \
+		echo 'path \"nicoca*\" { capabilities = [\"read\", \"list\"] } path \"nicoca/sign/nico-cluster\" { capabilities = [\"create\", \"update\"] } path \"nicoca/issue/nico-cluster\" { capabilities = [\"create\", \"update\"] } path \"secrets/data/*\" { capabilities = [\"read\", \"list\"] } path \"secrets/data/machines*\" { capabilities = [\"create\", \"read\", \"patch\", \"list\", \"update\", \"delete\"] } path \"secrets/data/machines/*\" { capabilities = [\"create\", \"read\", \"patch\", \"list\", \"update\", \"delete\"] } path \"secrets/metadata/machines/*\" { capabilities = [\"delete\"] } path \"secrets/destroy/machines/*\" { capabilities = [\"delete\"] } path \"secrets/data/ufm/*\" { capabilities = [\"create\", \"read\", \"patch\", \"list\", \"update\", \"delete\"] } path \"secrets/data/nmxm/*\" { capabilities = [\"create\", \"read\", \"patch\", \"list\", \"update\", \"delete\"] } path \"secrets/data/bgp/*\" { capabilities = [\"create\", \"read\", \"patch\", \"list\", \"update\", \"delete\"] }' | vault policy write nico-vault-policy - && \
+		vault auth enable approle 2>/dev/null || true && \
+		vault write auth/approle/role/nico token_policies=nico-vault-policy token_ttl=1h token_max_ttl=4h" && \
+	echo "Creating AppRole credentials..." && \
+	ROLE_ID=$$(oc exec $$V -n $$NS -- sh -c "export VAULT_TOKEN=$$RT VAULT_SKIP_VERIFY=true; vault read -field=role_id auth/approle/role/nico/role-id") && \
+	SECRET_ID=$$(oc exec $$V -n $$NS -- sh -c "export VAULT_TOKEN=$$RT VAULT_SKIP_VERIFY=true; vault write -f -field=secret_id auth/approle/role/nico/secret-id") && \
+	oc patch secret nico-vault-approle-tokens -n $$NS --type=merge \
+		-p "{\"stringData\":{\"VAULT_ROLE_ID\":\"$$ROLE_ID\",\"VAULT_SECRET_ID\":\"$$SECRET_ID\"}}" && \
+	echo "Creating Flow PSM/NSM tokens..." && \
+	PSM_TOKEN=$$(oc exec $$V -n $$NS -- sh -c "export VAULT_TOKEN=$$RT VAULT_SKIP_VERIFY=true; \
+		echo 'path \"secrets/data/psm/*\" { capabilities = [\"create\",\"read\",\"update\",\"delete\",\"list\"] } path \"secrets/metadata/psm/*\" { capabilities = [\"read\",\"list\",\"delete\"] } path \"nicoca/sign/nico-cluster\" { capabilities = [\"create\",\"update\"] }' | vault policy write psm-vault-policy - >/dev/null && \
+		vault token create -orphan -policy=psm-vault-policy -period=24h -field=token") && \
+	NSM_TOKEN=$$(oc exec $$V -n $$NS -- sh -c "export VAULT_TOKEN=$$RT VAULT_SKIP_VERIFY=true; \
+		echo 'path \"secrets/data/nsm/*\" { capabilities = [\"create\",\"read\",\"update\",\"delete\",\"list\"] } path \"secrets/metadata/nsm/*\" { capabilities = [\"read\",\"list\",\"delete\"] } path \"nicoca/sign/nico-cluster\" { capabilities = [\"create\",\"update\"] }' | vault policy write nsm-vault-policy - >/dev/null && \
+		vault token create -orphan -policy=nsm-vault-policy -period=24h -field=token") && \
+	oc create secret generic psm-vault-token -n $$NS --from-literal=token="$$PSM_TOKEN" --dry-run=client -o yaml | oc apply -f - && \
+	oc create secret generic nsm-vault-token -n $$NS --from-literal=token="$$NSM_TOKEN" --dry-run=client -o yaml | oc apply -f - && \
+	echo "Creating cert-manager Vault SA..." && \
+	oc create sa cert-manager-vault-nicoca-issuer -n cert-manager --dry-run=client -o yaml | oc apply -f - && \
+	echo '{"apiVersion":"v1","kind":"Secret","metadata":{"name":"vault-nicoca-issuer-token","namespace":"cert-manager","annotations":{"kubernetes.io/service-account.name":"cert-manager-vault-nicoca-issuer"}},"type":"kubernetes.io/service-account-token"}' | oc apply -f - && \
+	echo "Creating vault-nico-issuer ClusterIssuer..." && \
+	CA_B64=$$(oc get secret nico-root-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}') && \
+	echo "{\"apiVersion\":\"cert-manager.io/v1\",\"kind\":\"ClusterIssuer\",\"metadata\":{\"name\":\"vault-nico-issuer\"},\"spec\":{\"vault\":{\"path\":\"nicoca/sign/nico-cluster\",\"server\":\"https://vault.nico-system.svc:8200\",\"caBundle\":\"$$CA_B64\",\"auth\":{\"kubernetes\":{\"role\":\"cert-manager-nico-issuer\",\"mountPath\":\"/v1/auth/kubernetes\",\"secretRef\":{\"name\":\"vault-nicoca-issuer-token\",\"key\":\"token\"}}}}}}" | oc apply -f - && \
+	echo "=== Vault fully configured ==="
 
 deploy-site:
 	helm upgrade --install -n nico-system nico-core \
@@ -194,13 +260,15 @@ deploy-flow:
 		$(NICO_FLOW_CHART) --wait --timeout 5m \
 		-f helm/values/nico-core.yaml
 
-deploy-all-site: deploy-site-infra deploy-site deploy-flow
+deploy-all-site: deploy-site-infra vault-init deploy-site deploy-flow
 
 # =============================================================================
 # CRC (single-node) — overrides for local development on CodeReady Containers
 # =============================================================================
 
-CRC_VAULT_OVERRIDES := --set vault.server.ha.replicas=1 --set 'vault.server.affinity='
+CRC_VAULT_OVERRIDES := --set vault.server.ha.enabled=false \
+	--set vault.server.standalone.enabled=true \
+	--set-string 'vault.server.standalone.config=listener "tcp" { address = "[::]:8200"\n tls_cert_file = "/vault/userconfig/vault-tls/tls.crt"\n tls_key_file = "/vault/userconfig/vault-tls/tls.key"\n tls_client_ca_file = "/vault/userconfig/vault-tls/ca.crt"\n}\nstorage "file" { path = "/vault/data" }\ndisable_mlock = true'
 
 deploy-cloud-infra-crc: helm-dep-build
 	helm upgrade --install -n nico-rest nico-rest-infra \
@@ -213,8 +281,8 @@ deploy-site-infra-crc: helm-dep-build
 		--create-namespace --wait --timeout 15m \
 		$(CRC_VAULT_OVERRIDES)
 
-deploy-all-cloud-crc: deploy-prereqs deploy-cloud-infra-crc deploy-temporal deploy-cloud
-deploy-all-site-crc: deploy-site-infra-crc deploy-site deploy-flow
+deploy-all-cloud-crc: deploy-prereqs deploy-cloud-infra-crc deploy-cloud
+deploy-all-site-crc: deploy-site-infra-crc vault-init deploy-site deploy-flow
 
 # =============================================================================
 # Status and Cleanup

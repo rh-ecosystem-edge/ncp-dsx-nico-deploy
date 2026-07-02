@@ -2,7 +2,38 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # =============================================================================
-# Vault — BMC credential storage for Core tier (HA Raft + Transit auto-unseal)
+# Vault — BMC credential storage for Core tier
+#
+# Production: HA Raft (3 replicas) with TLS.
+# CRC/dev: standalone mode via Makefile CRC_VAULT_OVERRIDES.
+#
+# Unseal: `make vault-init` initializes and unseals Vault (one-time step).
+# The unseal key is stored in a K8s Secret. The postStart hook reads it
+# and auto-unseals on every pod restart.
+#
+# RECOMMENDATION — Production auto-unseal:
+#
+# The postStart + K8s Secret approach is suitable for development and
+# initial deployment. For production, replace it with an external unseal
+# mechanism that does not store the unseal key on the same cluster:
+#
+#   1. Cloud KMS (recommended for NCP cloud):
+#      Add a seal "awskms" / "gcpckms" / "azurekeyvault" stanza to the
+#      Vault config. Vault auto-unseals using the cloud provider's key
+#      management service. No unseal key stored anywhere.
+#      See: https://developer.hashicorp.com/vault/docs/configuration/seal
+#
+#   2. Transit Vault (recommended for multi-cluster / on-prem):
+#      Run a Transit Vault OUTSIDE this cluster (e.g., in NICo Cloud or
+#      operated by the security team). Add a seal "transit" stanza pointing
+#      to the external Transit Vault. Site Vaults auto-unseal via the
+#      Transit Vault's encryption key. The Transit Vault itself uses
+#      cloud KMS or is manually unsealed by the security team.
+#      See: https://developer.hashicorp.com/vault/tutorials/auto-unseal/autounseal-transit
+#
+# Both options eliminate the unseal key from the cluster entirely.
+# The postStart hook and vault-unseal-secret can be removed once an
+# external seal is configured — Vault handles unsealing natively.
 # =============================================================================
 vault:
   fullnameOverride: vault
@@ -27,7 +58,7 @@ vault:
         memory: 4Gi
     readinessProbe:
       enabled: true
-      path: "/v1/sys/health?standbyok=true"
+      path: "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204"
     livenessProbe:
       enabled: true
       path: "/v1/sys/health?sealedcode=204&uninitcode=204&standbyok=true"
@@ -41,51 +72,31 @@ vault:
       - name: vault-raft-tls
         secret:
           secretName: vault-raft-tls
+      - name: vault-unseal
+        secret:
+          secretName: vault-unseal-secret
+          optional: true
     volumeMounts:
       - mountPath: /vault/userconfig/vault-tls
         name: vault-tls
       - mountPath: /vault/userconfig/vault-raft-tls
         name: vault-raft-tls
+      - mountPath: /vault/userconfig/unseal
+        name: vault-unseal
+        readOnly: true
     postStart:
       - /bin/sh
       - -c
       - |
-        export VAULT_ADDR=https://127.0.0.1:8200
-        export VAULT_SKIP_VERIFY=true
-        APISERVER=https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}
-        SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-        NS=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
-
-        # Wait for Vault to be listening
-        until vault status -format=json 2>/dev/null | grep -q '"initialized"'; do
-          sleep 2
-        done
-
-        if vault status -format=json 2>/dev/null | grep -q '"initialized".*false'; then
-          # First boot — initialize and unseal
-          INIT=$(vault operator init -key-shares=1 -key-threshold=1 -format=json)
-          UNSEAL_KEY=$(echo "$INIT" | sed -n 's/.*"unseal_keys_b64":\["\([^"]*\)".*/\1/p')
-          ROOT_TOKEN=$(echo "$INIT" | sed -n 's/.*"root_token":"\([^"]*\)".*/\1/p')
-          vault operator unseal "$UNSEAL_KEY"
-
-          # Store keys in K8s Secret via API
-          KEY_B64=$(echo -n "$UNSEAL_KEY" | base64)
-          TOKEN_B64=$(echo -n "$ROOT_TOKEN" | base64)
-          wget -q -O /dev/null --method=POST \
-            --header="Authorization: Bearer ${SA_TOKEN}" \
-            --header="Content-Type: application/json" \
-            --no-check-certificate \
-            --body-data="{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"vault-unseal-secret\",\"namespace\":\"${NS}\"},\"type\":\"Opaque\",\"data\":{\"unseal-key\":\"${KEY_B64}\",\"root-token\":\"${TOKEN_B64}\",\"token\":\"${TOKEN_B64}\"}}" \
-            "${APISERVER}/api/v1/namespaces/${NS}/secrets" 2>/dev/null || true
-        elif vault status -format=json 2>/dev/null | grep -q '"sealed".*true'; then
-          # Already initialized — read unseal key from Secret and unseal
-          UNSEAL_KEY=$(wget -q -O - \
-            --header="Authorization: Bearer ${SA_TOKEN}" \
-            --no-check-certificate \
-            "${APISERVER}/api/v1/namespaces/${NS}/secrets/vault-unseal-secret" 2>/dev/null \
-            | sed -n 's/.*"unseal-key": *"\([^"]*\)".*/\1/p' | head -1)
-          if [ -n "$UNSEAL_KEY" ]; then
-            vault operator unseal "$(echo "$UNSEAL_KEY" | base64 -d)" 2>/dev/null || true
+        sleep 5
+        if [ -f /vault/userconfig/unseal/unseal-key ]; then
+          export VAULT_ADDR=https://127.0.0.1:8200
+          export VAULT_SKIP_VERIFY=true
+          until vault status -format=json 2>/dev/null | grep -q '"initialized"'; do
+            sleep 2
+          done
+          if vault status -format=json 2>/dev/null | grep -q '"sealed".*true'; then
+            vault operator unseal "$(cat /vault/userconfig/unseal/unseal-key)" 2>/dev/null || true
           fi
         fi
     shareProcessNamespace: true
@@ -185,32 +196,7 @@ vault:
 
           service_registration "kubernetes" {}
 
-# =============================================================================
-# Vault configuration — AppRole, KV seeding, Flow tokens
-# =============================================================================
-vaultConfig:
-  configJob:
-    enabled: true
-    vaultImage: "docker.io/hashicorp/vault:1.17"
-    kubectlImage: "docker.io/bitnami/kubectl:latest"
-  pkiMount: "nicoca"
-  pkiRole: "nico-cluster"
-  kvMount: "secrets"
-  kvSeeds:
-    - path: "machines/all_dpus/factory_default/bmc-metadata-items/root"
-      data:
-        UsernamePassword:
-          username: "root"
-          password: "0penBmc"
-    - path: "machines/all_dpus/factory_default/uefi-metadata-items/auth"
-      data:
-        UsernamePassword:
-          username: ""
-          password: "bluefield"
-  approle:
-    enabled: true
-    tokenTTL: "1h"
-    tokenMaxTTL: "4h"
+# Vault configuration (PKI, AppRole, KV seeding) is handled by `make vault-init`
 
 # =============================================================================
 # NATS — MQTT event bus for DSX Exchange (BMS telemetry, leak detection)

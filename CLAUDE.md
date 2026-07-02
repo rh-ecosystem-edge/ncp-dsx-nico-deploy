@@ -67,7 +67,6 @@ nico-system namespace (per-site, edge — upstream nico + site-agent charts)
 ├── nico-rest-site-agent             ← upstream (connects to cloud Temporal)
 ├── NATS (MQTT for DSX Exchange)     ← infra-site
 ├── Vault HA (3-node Raft)           ← infra-site
-├── Vault Transit (auto-unseal)      ← infra-site
 ├── nico-site-pg (Crunchy PG15)      ← infra-site (nico, flow, psm, nsm DBs)
 └── ESO ExternalSecrets              ← infra-site
 ```
@@ -88,11 +87,13 @@ nico-bootstrap-issuer (self-signed)
 ### Vault Configuration
 
 - **Primary:** 3-node HA Raft cluster with TLS, cert-reload sidecar (UBI-minimal)
-- **Auto-unseal:** Transit Vault (dedicated standalone instance, transit key `autounseal`)
+- **Unseal:** `make vault-init` (one-time), postStart auto-unseal from K8s Secret
 - **PKI:** `nicoca` engine with `nico-cluster` role (SPIFFE URI SANs)
 - **Auth:** AppRole for Core API (`nico-vault-policy`), K8s auth for cert-manager
 - **KV:** `secrets/` mount with factory-default BMC credential seeds
 - **Flow tokens:** Periodic tokens for PSM/NSM with scoped policies
+- **Production unseal:** Replace postStart with cloud KMS (AWS/GCP/Azure) or
+  external Transit Vault (in NICo Cloud or operated by security team)
 
 ### Prerequisites (installed by prereqs chart)
 
@@ -112,10 +113,10 @@ helm/
   nvidia-infra-controller-prereqs/   OLM operators + ClusterIssuers + ESO
   values/                            Values overrides for upstream charts
     nico-rest.yaml                     REST API, workflow, site-manager, credsmgr
-    temporal.yaml                      Temporal server (co-located in nico-rest ns)
     nico-core.yaml                     Core tier (all services enabled)
     nico-rest-site-agent.yaml          Site-agent (Temporal client)
   infra-cloud/                       Red Hat cloud infrastructure add-ons
+    Chart.yaml                         Depends on: Temporal chart
     templates/
       cnpg-cluster.yaml                Consolidated PG (nico, temporal, keycloak)
       keycloak/                        RHBK Keycloak CRDs + TLS
@@ -123,11 +124,11 @@ helm/
       eso-external-secrets.yaml        CA cert sync via ESO
       temporal-certificate.yaml        Temporal server TLS cert
   infra-site/                        Red Hat site infrastructure add-ons
+    Chart.yaml                         Depends on: Vault, NATS charts
     templates/
       cnpg-cluster.yaml                Consolidated PG (nico, flow, psm, nsm)
-      vault-init.yaml                  Vault config (PKI, AppRole, KV, Flow tokens)
-      vault-transit.yaml               Transit Vault (auto-unseal service)
-      vault-*-tls-cert.yaml            TLS certs (listener, Raft, transit)
+      vault-tls-cert.yaml              Vault listener TLS cert
+      vault-raft-tls-cert.yaml         Vault Raft peer TLS cert
       site-issuer.yaml                 site-issuer ClusterIssuer
       eso-external-secrets.yaml        nico-roots CA sync via ESO
       core-stubs.yaml                  AppRole placeholder secret
@@ -173,17 +174,16 @@ make helm-lint              Lint all charts + validate upstream rendering
 make helm-template          Template all charts (dry-run)
 
 # Deploy — Cloud profile
-make deploy-prereqs         Install OLM operators and ClusterIssuers
-make deploy-cloud-infra     Deploy PG, Keycloak, Routes, ESO (nico-rest ns)
-make deploy-temporal        Deploy Temporal server (nico-rest ns)
+make deploy-prereqs         Install OLM operators, ClusterIssuers, ESO
+make deploy-cloud-infra     Deploy PG, Keycloak, Temporal, Routes, ESO (nico-rest ns)
 make deploy-cloud           Deploy upstream nico-rest chart (nico-rest ns)
 make deploy-all-cloud       All cloud steps in order
 
 # Deploy — Site profile
 make deploy-site-infra      Deploy PG, Vault HA, NATS, ESO (nico-system ns)
+make vault-init             Init + unseal Vault, configure PKI/AppRole/KV (one-time)
 make deploy-site            Deploy upstream Core chart (nico-system ns)
 make deploy-site-agent      Register site + deploy site-agent (nico-system ns)
-make deploy-flow            Deploy upstream Flow chart (nico-system ns)
 make deploy-all-site        All site steps in order
 
 # Operations

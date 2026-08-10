@@ -1,4 +1,4 @@
 {
-  "ubi-micro": "sha256:af12ec115e0b0c19432cea2b826dea5b8d0d06f77f7c318aed93915b3233abea",
-  "ubi-minimal": "sha256:f0ed153f25c9a3df530ccf2c49ec04430efef206083cbbc16ca76a866ef096b5"
+  "ubi-micro": "sha256:cabedb588644e9da2c95ebb173a67b78d58aaedcb0eaa42a86f880bcef8a0b2f",
+  "ubi-minimal": "sha256:e6c7c01447dc8eadf2a673e65fb6c607f16e168fe29a776fb937004f33c81cc0"
 }

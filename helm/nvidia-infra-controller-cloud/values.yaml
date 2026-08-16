@@ -36,8 +36,6 @@ temporal:
     image:
       pullPolicy: IfNotPresent
 
-    securityContext: null
-
     metrics:
       annotations:
         enabled: true
@@ -153,7 +151,6 @@ temporal:
     frontend:
       replicaCount: 1
       readinessProbe:
-        grpc: null
         tcpSocket:
           port: 7233
         initialDelaySeconds: 10

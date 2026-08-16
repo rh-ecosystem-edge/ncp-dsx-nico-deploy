@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Temporal chart's server.securityContext default (fsGroup/runAsUser: 1000)
+# is fixed outside OpenShift's per-namespace SCC-allocated UID range, so no
+# SCC admits the pod. Overriding to null via Helm values doesn't clear it —
+# Helm's dependency-value merge keeps the subchart's table-typed default
+# even when the parent sets the key to null. Clear it here instead so
+# OpenShift's restricted SCC can assign a UID/fsGroup in-range.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: placeholder
+spec:
+  template:
+    spec:
+      securityContext: null

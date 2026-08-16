@@ -37,3 +37,25 @@ patches:
     target:
       kind: Deployment
       name: nico-rest-cert-manager
+  # Remove conflicting grpc readinessProbe handler on temporal-frontend
+  - path: patches/fix-temporal-frontend-readinessprobe.yaml
+    target:
+      kind: Deployment
+      name: temporal-frontend
+  # Clear fixed UID securityContext on temporal server deployments for OpenShift SCC
+  - path: patches/fix-temporal-server-securitycontext.yaml
+    target:
+      kind: Deployment
+      name: temporal-frontend
+  - path: patches/fix-temporal-server-securitycontext.yaml
+    target:
+      kind: Deployment
+      name: temporal-history
+  - path: patches/fix-temporal-server-securitycontext.yaml
+    target:
+      kind: Deployment
+      name: temporal-matching
+  - path: patches/fix-temporal-server-securitycontext.yaml
+    target:
+      kind: Deployment
+      name: temporal-worker

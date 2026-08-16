@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Temporal chart's frontend readinessProbe defaults to grpc; our values.yaml
+# adds a tcpSocket probe on top since frontend serves TLS-only gRPC. Helm's
+# deep-merge keeps both handlers, which the API server rejects ("may not
+# specify more than 1 handler type"). Strip grpc here instead of via Helm
+# values, since a null override there is coerced into an empty (non-nil)
+# GRPCAction by server-side apply rather than actually removing the field.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: temporal-frontend
+spec:
+  template:
+    spec:
+      containers:
+      - name: temporal-frontend
+        readinessProbe:
+          grpc: null

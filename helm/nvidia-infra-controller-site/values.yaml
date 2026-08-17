@@ -149,6 +149,12 @@ nico-core:
       enabled: true
       nicoApiSiteConfig: |
         bypass_rbac = true
+        initial_domain_name = "nico.local"
+        # machine-a-tron doesn't run a real Scout agent, so it can't send
+        # measured-boot/TPM attestation reports; without this, hosts stall
+        # forever in Measuring/WaitingForMeasurements.
+        attestation_enabled = false
+        tpm_required = false
 
         [auth]
         permissive_mode = true
@@ -157,6 +163,31 @@ nico-core:
         spiffe_trust_domain = "nico.local"
         spiffe_service_base_paths = ["/nico-system/sa/", "/default/sa/", "/nvidia-infra-controller-site/sa/", "/elektra-site-agent/sa/"]
         spiffe_machine_base_path = "/nico-system/machine/"
+
+        # Points BMC/Redfish exploration at machine-a-tron's bmc-mock instead
+        # of real hardware (see machine-a-tron-testing-guide.md).
+        [site_explorer]
+        run_interval = "10s"
+        allow_zero_dpu_hosts = true
+        bmc_proxy = "machine-a-tron-bmc-mock.nvidia-infra-controller-site.svc.cluster.local:1266"
+
+        # Network segments matching machine-a-tron's simulated DHCP relay
+        # addresses, so its discovery requests resolve to a segment instead
+        # of being rejected (see machine-a-tron-testing-guide.md).
+        [networks.oob]
+        type = "underlay"
+        prefix = "192.168.2.0/24"
+        gateway = "192.168.2.1"
+        mtu = 1500
+        reserve_first = 10
+
+        [networks.admin]
+        type = "admin"
+        prefix = "192.168.252.0/24"
+        gateway = "192.168.252.1"
+        mtu = 9000
+        reserve_first = 10
+
         [pools.lo-ip]
         type = "ipv4"
         ranges = [{ start = "10.100.0.1", end = "10.100.0.254" }]

@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# machine-a-tron — bare-metal emulation tool for testing NICo without hardware.
+# Build context: infra-controller repo root
+#
+# Dev/test tooling only, never shipped to customers, so this builds from the
+# public Rust image instead of UBI+RHSM (unlike the other images in this repo).
+
+# --- Builder stage ---
+FROM docker.io/library/rust:1.95-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    clang \
+    unzip \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Debian's protobuf-compiler package omits the well-known-types .proto files
+# tonic-prost-build needs (google/protobuf/timestamp.proto etc), so fetch the
+# upstream release, which bundles them under include/.
+RUN curl -sLO https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-x86_64.zip && \
+    unzip protoc-28.3-linux-x86_64.zip -d /usr/local && \
+    rm protoc-28.3-linux-x86_64.zip
+
+WORKDIR /workspace
+COPY . .
+
+RUN rm -f rust-toolchain.toml
+
+ENV CARGO_PROFILE_RELEASE_LTO="thin"
+ENV CARGO_PROFILE_RELEASE_STRIP="symbols"
+ENV CARGO_PROFILE_RELEASE_DEBUG="false"
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/workspace/target \
+    cargo build --release -p carbide-machine-a-tron --bin machine-a-tron && \
+    mkdir -p /app/bin && \
+    cp /workspace/target/release/machine-a-tron /app/bin/machine-a-tron
+
+# --- Runtime stage ---
+FROM docker.io/library/debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    iproute2 \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+LABEL name="machine-a-tron" \
+      summary="NICo bare-metal emulation tool (dev/test only)" \
+      description="Simulates BMC/Redfish endpoints and drives the NICo state machine without physical hardware" \
+      io.k8s.display-name="machine-a-tron" \
+      io.k8s.description="NICo Infra Controller bare-metal emulator"
+
+RUN mkdir -p /opt/machine-a-tron/bin /opt/machine-a-tron/templates /tmp/machine-a-tron-data
+
+COPY --from=builder /app/bin/machine-a-tron /opt/machine-a-tron/bin/machine-a-tron
+COPY --from=builder /workspace/crates/machine-a-tron/templates /opt/machine-a-tron/templates
+COPY --from=builder /workspace/crates/bmc-mock/dell_poweredge_r750.tar.gz /opt/machine-a-tron/dell_poweredge_r750.tar.gz
+COPY --from=builder /workspace/crates/bmc-mock/nvidia_dpu.tar.gz /opt/machine-a-tron/nvidia_dpu.tar.gz
+
+# OpenShift's restricted SCC runs the container as an arbitrary UID in group 0.
+RUN chgrp -R 0 /opt/machine-a-tron /tmp/machine-a-tron-data && \
+    chmod -R g=u /opt/machine-a-tron /tmp/machine-a-tron-data
+
+USER 1001
+
+EXPOSE 1266 2222
+
+ENTRYPOINT ["/opt/machine-a-tron/bin/machine-a-tron"]

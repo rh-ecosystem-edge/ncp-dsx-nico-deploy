@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 .PHONY: docker-build-ubi docker-push-ubi helm-dep-build helm-lint helm-template
+.PHONY: build-machine-a-tron bootstrap-machine-a-tron machine-a-tron-status
 .PHONY: deploy-prereqs deploy-cloud deploy-site status undeploy
 
 # Upstream source repo (for building images)
@@ -11,6 +12,9 @@ UPSTREAM ?= helm/vendor/infra-controller
 IMAGE_REGISTRY ?= quay.io/fdupont-redhat
 IMAGE_TAG ?= latest
 DOCKERFILE_DIR := docker/ubi
+
+# Namespace the machine-a-tron BuildConfig/ImageStream/Deployment live in.
+MAT_NAMESPACE ?= nvidia-infra-controller-site
 
 # Cluster ingress domain (auto-detected from OpenShift)
 CLUSTER_DOMAIN ?= $(shell oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
@@ -44,6 +48,45 @@ docker-push-ubi:
 		echo "Pushing $$img..." && \
 		podman push $(IMAGE_REGISTRY)/$$img:$(IMAGE_TAG); \
 	done
+
+# machine-a-tron is dev/test tooling only, built as an amd64 Linux binary.
+# Cross-arch podman/qemu emulation on Apple Silicon is unreliable for Rust
+# builds, so this builds in-cluster via an OpenShift Build on a real amd64
+# node and pushes straight to the internal registry (no external registry
+# needed). The Dockerfile is copied into the submodule only for the duration
+# of the upload, since oc's binary Docker strategy requires it inside the
+# build context.
+build-machine-a-tron:
+	oc get bc machine-a-tron -n $(MAT_NAMESPACE) >/dev/null 2>&1 || \
+		oc new-build --binary --strategy=docker --name=machine-a-tron -n $(MAT_NAMESPACE)
+	cp docker/testing/Dockerfile.machine-a-tron $(UPSTREAM)/Dockerfile
+	oc start-build machine-a-tron -n $(MAT_NAMESPACE) --from-dir=$(UPSTREAM) --wait; \
+		rc=$$?; rm -f $(UPSTREAM)/Dockerfile; exit $$rc
+
+# `nico-admin-cli` bundled in the nico-api pod, using its own mounted mTLS
+# client certs. Its default target (carbide-api.forge-system) doesn't exist
+# here, so the connection flags are mandatory. See machine-a-tron-testing-guide.md.
+NICO_ADMIN_CLI := oc exec -n $(MAT_NAMESPACE) deploy/nico-api -- /opt/nico/nico-admin-cli \
+	--carbide-api https://nico-api.$(MAT_NAMESPACE).svc.cluster.local:1079 \
+	--client-cert-path /run/secrets/spiffe.io/tls.crt \
+	--client-key-path /run/secrets/spiffe.io/tls.key \
+	--forge-root-ca-path /run/secrets/spiffe.io/ca.crt
+
+# Bootstraps the BMC/UEFI credentials machine-a-tron's bmc-mock validates
+# against (crates/bmc-mock/src/lib.rs). Idempotent: safe to re-run, existing
+# credentials just fail with "already exists" (ignored).
+bootstrap-machine-a-tron:
+	oc rollout status deployment/nico-api -n $(MAT_NAMESPACE) --timeout=5m
+	$(NICO_ADMIN_CLI) credential add-bmc --kind=site-wide-root --username root --password 'SiteR00t-P@ssw0rd' || true
+	$(NICO_ADMIN_CLI) credential add-host-factory-default --vendor dell --username root --password factory_password || true
+	$(NICO_ADMIN_CLI) credential add-dpu-factory-default --username root --password 0penBmc || true
+	$(NICO_ADMIN_CLI) credential add-uefi --kind=dpu --password=mock-uefi-password || true
+	$(NICO_ADMIN_CLI) credential add-uefi --kind=host --password=mock-uefi-password || true
+
+# Managed hosts + state, straight from Core gRPC. Empty rows are normal
+# until machine-a-tron's DHCP/discovery cycle catches up (a few minutes).
+machine-a-tron-status:
+	$(NICO_ADMIN_CLI) managed-host show
 
 # =============================================================================
 # Helm Charts

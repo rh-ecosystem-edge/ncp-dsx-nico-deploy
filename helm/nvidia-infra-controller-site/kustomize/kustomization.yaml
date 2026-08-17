@@ -5,6 +5,8 @@ kind: Kustomization
 
 resources:
   - all.yaml
+  # Bare-metal emulation for testing (see machine-a-tron-testing-guide.md)
+  - machine-a-tron.yaml
 
 images:
   - name: quay.io/fdupont-redhat:latest

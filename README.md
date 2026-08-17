@@ -61,12 +61,26 @@ security context overrides (`runAsNonRoot`, `drop: ALL`, etc.) for the
 restricted PodSecurity policy.
 
 **nico-admin-cli** — Core gRPC client (bare metal management, host discovery).
-Only relevant after deploying the site profile:
+Only relevant after deploying the site profile. It's bundled in the
+`nico-api` pod, which has its own client certs mounted at
+`/run/secrets/spiffe.io/` — the CLI's *default* target is
+`carbide-api.forge-system`, a dev-environment address that doesn't exist
+here, so the `--carbide-api`/cert flags below are not optional:
 
 ```bash
-oc exec deploy/nico-core -n nvidia-infra-controller-site -- \
-  /app/nico-admin-cli site-explorer get-report
+oc exec -n nvidia-infra-controller-site deploy/nico-api -- /opt/nico/nico-admin-cli \
+  --carbide-api https://nico-api.nvidia-infra-controller-site.svc.cluster.local:1079 \
+  --client-cert-path /run/secrets/spiffe.io/tls.crt \
+  --client-key-path /run/secrets/spiffe.io/tls.key \
+  --forge-root-ca-path /run/secrets/spiffe.io/ca.crt \
+  machine-interfaces show
 ```
+
+`machine-interfaces show` is a good sanity check that Core is up and
+reachable at any stage — it returns an empty table (rather than an error)
+until machines/DPUs have actually registered interfaces, so a working-but-
+empty response confirms the API and mTLS setup are fine even before any
+hardware (or machine-a-tron) has been discovered.
 
 ## Container Images
 

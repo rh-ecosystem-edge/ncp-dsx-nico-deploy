@@ -1,0 +1,144 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# machine-a-tron — simulates bare-metal hosts/DPUs against the site profile's
+# nico-api, without physical hardware. Test/dev tooling only; not part of the
+# production site chart. See machine-a-tron-testing-guide.md at the repo root.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: machine-a-tron
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: machine-a-tron-config
+data:
+  mat.toml: |
+    carbide_api_url = "https://nico-api.nvidia-infra-controller-site.svc.cluster.local:1079"
+    interface = "NOTUSED"
+    tui_enabled = false
+    log_file = "/tmp/mat.log"
+    use_pxe_api = true
+    use_single_bmc_mock = true
+    bmc_mock_port = 1266
+    mock_bmc_ssh_server = true
+    mock_bmc_ssh_port = 2222
+    persist_dir = "/tmp/machine-a-tron-data"
+    register_expected_machines = true
+
+    [machines.config]
+    host_count = 2
+    # NoDpu mode: DPU-equipped hosts can't reach Ready without a real
+    # host-side Scout agent (machine-a-tron only simulates the DPU-side
+    # agent), so they get stuck forever at WaitingForCleanup/HostCleanup.
+    # See machine-a-tron-testing-guide.md.
+    dpu_per_host_count = 0
+    vpc_count = 0
+    subnets_per_vpc = 0
+    dpu_reboot_delay = 10
+    host_reboot_delay = 10
+    template_dir = "/opt/machine-a-tron/templates"
+    oob_dhcp_relay_address = "192.168.2.1"
+    admin_dhcp_relay_address = "192.168.252.1"
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: machine-a-tron-certificate
+spec:
+  secretName: machine-a-tron-certificate
+  duration: 720h0m0s
+  renewBefore: 360h0m0s
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+  issuerRef:
+    kind: ClusterIssuer
+    name: nico-rest-ca-issuer
+    group: cert-manager.io
+  dnsNames:
+    - machine-a-tron.nvidia-infra-controller-site.svc.cluster.local
+    - machine-a-tron-bmc-mock.nvidia-infra-controller-site.svc.cluster.local
+  uris:
+    - spiffe://nico.local/nvidia-infra-controller-site/sa/machine-a-tron
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: machine-a-tron-bmc-mock
+  labels:
+    app: machine-a-tron
+spec:
+  selector:
+    app: machine-a-tron
+  ports:
+    - name: redfish
+      port: 1266
+      targetPort: redfish
+      protocol: TCP
+    - name: ssh
+      port: 22
+      targetPort: ssh
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: machine-a-tron
+  labels:
+    app: machine-a-tron
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: machine-a-tron
+  template:
+    metadata:
+      labels:
+        app: machine-a-tron
+    spec:
+      serviceAccountName: machine-a-tron
+      containers:
+        - name: machine-a-tron
+          image: image-registry.openshift-image-registry.svc:5000/nvidia-infra-controller-site/machine-a-tron:latest
+          imagePullPolicy: Always
+          env:
+            - name: FORGE_ROOT_CA_PATH
+              value: /etc/machine-a-tron/tls/ca.crt
+            - name: CLIENT_CERT_PATH
+              value: /etc/machine-a-tron/tls/tls.crt
+            - name: CLIENT_KEY_PATH
+              value: /etc/machine-a-tron/tls/tls.key
+            - name: MACHINE_A_TRON_CONFIG_PATH
+              value: /opt/machine-a-tron/config/mat.toml
+          ports:
+            - name: redfish
+              containerPort: 1266
+            - name: ssh
+              containerPort: 2222
+          readinessProbe:
+            tcpSocket:
+              port: redfish
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/machine-a-tron/tls
+              readOnly: true
+            - name: config
+              mountPath: /opt/machine-a-tron/config
+              readOnly: true
+            - name: persist
+              mountPath: /tmp/machine-a-tron-data
+      volumes:
+        - name: tls
+          secret:
+            secretName: machine-a-tron-certificate
+        - name: config
+          configMap:
+            name: machine-a-tron-config
+        - name: persist
+          emptyDir: {}

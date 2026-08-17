@@ -50,6 +50,37 @@ subjects:
     name: vault-init
     namespace: {{ .Release.Namespace }}
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  # Cluster-scoped, so namespace this name to avoid clashing with other sites.
+  #
+  # Bound to Vault's OWN service account ("vault", from the upstream Vault
+  # chart), not vault-init's. Vault's kubernetes auth backend needs a
+  # token-reviewer JWT to validate logins; the natural-looking choice is to
+  # capture vault-init's own SA token into `token_reviewer_jwt` at Job run
+  # time (see below), but that token is minted once for a one-shot Job pod
+  # that's deleted immediately after (hook-succeeded), so it can never be
+  # refreshed — every Kubernetes-auth login starts failing with a bare
+  # "permission denied" once that token's TTL elapses (~1h), permanently,
+  # since nothing is left running to mint a new one. Binding this to Vault's
+  # own SA instead and omitting `token_reviewer_jwt` from the config below
+  # lets Vault fall back to its own pod's mounted token, which kubelet
+  # refreshes in place for as long as vault-0 is running.
+  name: {{ .Release.Namespace }}-vault-auth-delegator
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: vault
+    namespace: {{ .Release.Namespace }}
+---
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -101,6 +132,60 @@ spec:
               echo "Enabling KV v2 secrets engine..."
               export VAULT_TOKEN="$ROOT_TOKEN"
               vault secrets enable -path=secrets kv-v2 || true
+
+              echo "Enabling PKI secrets engine so nico-api can issue machine identity certs..."
+              # Required for DiscoverMachine (machine/DPU mTLS cert issuance),
+              # independent of attestation_enabled. Without this, DiscoverMachine
+              # fails with "Failed to generate client certificate: ... 403/404".
+              # Matches VAULT_PKI_MOUNT_LOCATION=nicoca / VAULT_PKI_ROLE_NAME=nico-cluster
+              # on the nico-api deployment.
+              vault secrets enable -path=nicoca pki || true
+              vault secrets tune -max-lease-ttl=87600h nicoca || true
+              vault read nicoca/cert/ca >/dev/null 2>&1 || \
+                vault write nicoca/root/generate/internal common_name="nico.local" ttl=87600h
+              vault write nicoca/roles/nico-cluster \
+                allow_any_name=true \
+                enforce_hostnames=false \
+                allow_ip_sans=true \
+                allowed_uri_sans='spiffe://*' \
+                require_cn=false \
+                server_flag=true \
+                client_flag=true \
+                key_type=ec \
+                key_bits=256 \
+                max_ttl=720h
+
+              echo "Enabling Kubernetes auth so nico-api can store BMC credentials..."
+              # Deliberately no token_reviewer_jwt here: leaving it unset makes
+              # Vault fall back to its own pod's mounted service account token
+              # (SA "vault", granted system:auth-delegator above) at auth time,
+              # which kubelet keeps refreshed for as long as vault-0 runs.
+              # Setting it explicitly to this Job's own token would capture a
+              # one-shot credential that can never be renewed once this Job's
+              # pod is gone — see the ClusterRoleBinding comment above.
+              vault auth enable kubernetes || true
+              vault write auth/kubernetes/config \
+                kubernetes_host=https://kubernetes.default.svc \
+                kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+
+              cat <<'POLICY' > /tmp/nico-api-policy.hcl
+              path "secrets/data/machines/*" {
+                capabilities = ["create", "read", "update", "delete", "list"]
+              }
+              path "secrets/metadata/machines/*" {
+                capabilities = ["list", "read", "delete"]
+              }
+              path "nicoca/issue/nico-cluster" {
+                capabilities = ["create", "update"]
+              }
+              POLICY
+              vault policy write nico-api /tmp/nico-api-policy.hcl
+
+              vault write auth/kubernetes/role/nico-api \
+                bound_service_account_names=nico-api \
+                bound_service_account_namespaces={{ .Release.Namespace }} \
+                policies=nico-api \
+                ttl=1h
 
               echo "$UNSEAL_KEY" > /vault-data/unseal-key
               echo "$ROOT_TOKEN" > /vault-data/root-token

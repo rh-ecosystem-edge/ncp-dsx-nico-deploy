@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Remove hardcoded runAsUser/fsGroup for OpenShift SCC compatibility.
+# OpenShift assigns UID/GID from the namespace's allocated range;
+# the upstream values (1000) fall outside that range under restricted-v2.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: placeholder
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: null
+        fsGroup: null

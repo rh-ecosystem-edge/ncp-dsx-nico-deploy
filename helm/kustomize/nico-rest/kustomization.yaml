@@ -7,6 +7,11 @@ resources:
   - all.yaml
 
 patches:
+  # Remove hardcoded runAsUser/fsGroup for OpenShift SCC compatibility
+  - path: patches/fix-db-security-context.yaml
+    target:
+      kind: Job
+      name: nico-rest-db-migration-latest
   # Fix imagePullPolicy on db migration init container
   - path: patches/fix-db-pullpolicy.yaml
     target:
@@ -17,6 +22,27 @@ patches:
     target:
       kind: Job
       name: nico-rest-db-migration-latest
+  # Remove hardcoded runAsUser/fsGroup on all REST Deployments for OpenShift SCC
+  - path: patches/fix-rest-security-context.yaml
+    target:
+      kind: Deployment
+      name: nico-rest-api
+  - path: patches/fix-rest-security-context.yaml
+    target:
+      kind: Deployment
+      name: nico-rest-cloud-worker
+  - path: patches/fix-rest-security-context.yaml
+    target:
+      kind: Deployment
+      name: nico-rest-site-worker
+  - path: patches/fix-rest-security-context.yaml
+    target:
+      kind: Deployment
+      name: nico-rest-site-manager
+  - path: patches/fix-rest-security-context.yaml
+    target:
+      kind: Deployment
+      name: nico-rest-cert-manager
   # Wait for Keycloak before starting API (JWKS fetch race)
   - path: patches/fix-api-wait-keycloak.yaml
     target:
@@ -27,8 +53,3 @@ patches:
     target:
       kind: Deployment
       name: nico-rest-api
-  # Clear securityContext on credsmgr for OpenShift SCC
-  - path: patches/fix-credsmgr-securitycontext.yaml
-    target:
-      kind: Deployment
-      name: nico-rest-cert-manager

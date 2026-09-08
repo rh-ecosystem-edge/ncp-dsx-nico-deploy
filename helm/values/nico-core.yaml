@@ -209,24 +209,12 @@ nico-flow:
     flow:
       repository: quay.io/fdupont-redhat/nico-flow
       tag: latest
-    psm:
-      repository: quay.io/fdupont-redhat/nico-psm
-      tag: latest
-    nsm:
-      repository: quay.io/fdupont-redhat/nico-nsm
-      tag: latest
   database:
     host: nico-site-pg-primary
     port: 5432
     certPath: ""
     flow:
       name: flow
-      credentialsSecret: nico-site-pg-pguser-nico
-    psm:
-      name: psm
-      credentialsSecret: nico-site-pg-pguser-nico
-    nsm:
-      name: nsm
       credentialsSecret: nico-site-pg-pguser-nico
   nicoCoreApi:
     url: nico-api:1079
@@ -245,8 +233,6 @@ nico-flow:
       group: cert-manager.io
   vault:
     address: https://vault.nico-system:8200
-    psmTokenSecret: psm-vault-token
-    nsmTokenSecret: nsm-vault-token
   certificate:
     apiIdentity:
       namespace: nico-system

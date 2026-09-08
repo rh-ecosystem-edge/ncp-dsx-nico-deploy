@@ -29,6 +29,7 @@ jobs:
         run: |
           helm repo add temporal https://go.temporal.io/helm-charts
           helm repo add hashicorp https://helm.releases.hashicorp.com
+          helm repo add nats https://nats-io.github.io/k8s/helm/charts/
           helm repo update
 
       - name: Build dependencies

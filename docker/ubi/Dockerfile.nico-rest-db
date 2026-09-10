@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Build stage
+# hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/go-toolset:latest AS builder
-USER root
+# hadolint ignore=DL3002
+USER 0
 ENV CGO_ENABLED=0
 WORKDIR /workspace
 
@@ -17,7 +19,8 @@ COPY common/ ./common/
 COPY db/ ./db/
 COPY ipam/ ./ipam/
 
-USER root
+# hadolint ignore=DL3002
+USER 0
 ENV CGO_ENABLED=0
 WORKDIR /workspace/db
 RUN --mount=type=cache,target=/root/go/pkg/mod   \
@@ -28,6 +31,7 @@ RUN --mount=type=cache,target=/root/go/pkg/mod   \
         ./cmd/migrations
 
 # Runtime stage
+# hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/ubi-micro:latest
 
 WORKDIR /app

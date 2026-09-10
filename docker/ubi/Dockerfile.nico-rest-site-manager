@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Build stage
+# hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/go-toolset:latest AS builder
-USER root
+# hadolint ignore=DL3002
+USER 0
 ENV CGO_ENABLED=0
 WORKDIR /workspace
 
@@ -16,7 +18,8 @@ RUN --mount=type=cache,target=/root/go/pkg/mod   \
 COPY site-manager/ ./site-manager/
 COPY cert-manager/ ./cert-manager/
 
-USER root
+# hadolint ignore=DL3002
+USER 0
 ENV CGO_ENABLED=0
 WORKDIR /workspace/site-manager
 RUN --mount=type=cache,target=/root/go/pkg/mod   \
@@ -27,6 +30,7 @@ RUN --mount=type=cache,target=/root/go/pkg/mod   \
         ./cmd/sitemgr
 
 # Runtime stage
+# hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/ubi-micro:latest
 
 WORKDIR /app

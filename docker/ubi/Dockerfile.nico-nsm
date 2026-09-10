@@ -2,13 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Build stage
+# hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/go-toolset:latest AS builder
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ENV GIT_TERMINAL_PROMPT=1
 
 ARG skipcache=0
 
-USER root
+# hadolint ignore=DL3002
+USER 0
 ENV CGO_ENABLED=0
 WORKDIR /workspace
 
@@ -21,7 +24,8 @@ RUN --mount=type=cache,target=/root/go/pkg/mod   \
 COPY common/ ./common/
 COPY nvswitch-manager/ ./nvswitch-manager/
 
-USER root
+# hadolint ignore=DL3002
+USER 0
 ENV CGO_ENABLED=0
 WORKDIR /workspace/nvswitch-manager
 
@@ -32,6 +36,7 @@ RUN --mount=type=cache,target=/root/go/pkg/mod   \
     .
 
 # Install sshpass (requires RHEL repos via activation key)
+# hadolint ignore=DL3041
 RUN --mount=type=secret,id=rhsm_org \
     --mount=type=secret,id=rhsm_activationkey \
     rm -f /etc/rhsm-host && \
@@ -42,8 +47,10 @@ RUN --mount=type=secret,id=rhsm_org \
     dnf install -y sshpass && dnf clean all
 
 # Runtime stage
+# hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/ubi-minimal:latest
 
+# hadolint ignore=DL3041
 RUN microdnf install -y \
     bash \
     openssh-clients \

@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Lint
+
+on:
+  pull_request:
+    paths:
+      - 'docker/**'
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - 'docker/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+jobs:
+  hadolint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run hadolint
+        run: |
+          set -euo pipefail
+          status=0
+          for f in docker/ubi/Dockerfile.*; do
+            echo "::group::hadolint $f"
+            docker run --rm -i hadolint/hadolint < "$f" || status=1
+            echo "::endgroup::"
+          done
+          exit "$status"
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color

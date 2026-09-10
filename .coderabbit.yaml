@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+language: en-US
+
+reviews:
+  profile: chill
+  auto_review:
+    enabled: true
+  path_filters:
+    # Vendored upstream source, never modified here — see CLAUDE.md.
+    - "!helm/vendor/**"
+  path_instructions:
+    - path: "docker/ubi/**"
+      instructions: >
+        Focus on Dockerfile correctness: multi-stage build hygiene, pinned
+        base image tags, RHSM entitlement handling (subscription-manager
+        register must always be paired with an unregister trap), and secret
+        handling (RHSM credentials must be BuildKit --mount=type=secret,
+        never --build-arg or COPY).
+    - path: "helm/**/templates/**"
+      instructions: >
+        Focus on Helm template correctness: values defaulting, nil-safety,
+        and whether resources match the cloud/site profile split described
+        in CLAUDE.md.
+    - path: ".github/workflows/**"
+      instructions: >
+        Focus on whether secrets are scoped correctly (e.g. not exposed to
+        fork-triggered pull_request runs) and whether image push is
+        correctly gated to non-PR events.
+
+chat:
+  auto_reply: true

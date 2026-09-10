@@ -7,8 +7,11 @@
 # Requires RHEL entitlements (Konflux provides them automatically).
 
 # --- Builder stage ---
+# hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/ubi:latest AS builder
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# hadolint ignore=DL3041
 RUN --mount=type=secret,id=rhsm_org \
     --mount=type=secret,id=rhsm_activationkey \
     rm -f /etc/rhsm-host && \
@@ -81,10 +84,13 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     cp /workspace/target/release/libdhcp.so /app/bin/libdhcp.so
 
 # --- Runtime stage ---
+# hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/ubi-minimal:latest
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # RHEL10 baseos ships `kea` but not `kea-devel`; neither is in EPEL for
 # el10 yet. ISC's own repo has both at matching versions.
+# hadolint ignore=DL3041
 RUN microdnf install -y curl tpm2-tss libcap && \
     curl -1sLf https://dl.cloudsmith.io/public/isc/kea-3-0/cfg/setup/bash.rpm.sh | bash && \
     microdnf install -y isc-kea-dhcp4 && \

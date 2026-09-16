@@ -102,8 +102,16 @@ check-prereqs:
 	fi; \
 	if oc whoami >/dev/null 2>&1; then \
 		echo "  [OK]      oc is logged in to $$(oc whoami --show-server 2>/dev/null)"; \
+		SC=$$(oc get sc -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{end}' 2>/dev/null); \
+		if [ -n "$$SC" ]; then \
+			echo "  [OK]      default StorageClass: $$SC"; \
+		else \
+			echo "  [MISSING] no default StorageClass — PG, Vault, NATS, and Temporal PVCs will fail"; \
+			MISSING=1; \
+		fi; \
 	else \
 		echo "  [MISSING] oc is not logged in to a cluster"; \
+		echo "            (skipping default StorageClass check)"; \
 		MISSING=1; \
 	fi; \
 	echo "" && \
@@ -213,6 +221,10 @@ machine-a-tron-status:
 
 helm-dep-build:
 	git submodule update --init
+	helm repo add temporal https://go.temporal.io/helm-charts 2>/dev/null || true
+	helm repo add hashicorp https://helm.releases.hashicorp.com 2>/dev/null || true
+	helm repo add nats https://nats-io.github.io/k8s/helm/charts/ 2>/dev/null || true
+	helm repo update >/dev/null
 	helm dependency build helm/infra-cloud/
 	helm dependency build helm/infra-site/
 

@@ -8,7 +8,8 @@ External Secrets Operator, and OpenShift Routes.
 ## Prerequisites
 
 - OpenShift 4.21+
-- `oc` and `helm` CLI tools
+- `oc`, `helm`, `kustomize`, `podman`, `python3`, `git`, `curl`, `jq` and
+  `ssh-keygen` tools.
 - Git submodule initialized (`git submodule update --init`)
 - A **default StorageClass** with dynamic RWO provisioning. The PostgreSQL,
   Vault, NATS, and Temporal PVCs use `storageClass: null` (the cluster
@@ -16,6 +17,14 @@ External Secrets Operator, and OpenShift Routes.
   `gp3-csi`); a bare cluster (SNO on a VM, self-managed bare metal) needs a
   provisioner installed and marked default first — LVM Storage (LVMS) or
   OpenShift Data Foundation. See `minimal-setup-requirements.md`.
+
+Verify all required tools are installed. Some checks (cluster login, default
+StorageClass) require an active cluster session (`oc login` or
+`export KUBECONFIG=...`):
+
+```bash
+make check-prereqs
+```
 
 ## Deployment
 

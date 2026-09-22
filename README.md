@@ -26,7 +26,59 @@ StorageClass) require an active cluster session (`oc login` or
 make check-prereqs
 ```
 
+### Optional: bootstrap the cluster
+
+No cluster? `make bootstrap-cluster` creates one: a single-node OpenShift on
+a local libvirt VM (static IP) installed via the Assisted Installer, plus
+LVM Storage so a default StorageClass exists. The whole path is
+self-contained in `cluster/bootstrap.sh` (a trimmed SNO-only extraction of
+the `rh-ecosystem-edge/openshift-dpf` cluster chain) — nothing DPU/DPF-
+related runs.
+
+```bash
+make bootstrap-cluster \
+    NICO_BASE_DOMAIN=example.com \
+    NICO_API_IP=192.168.110.10 \
+    NICO_GW=192.168.110.1 \
+    NICO_DNS=192.168.110.2
+```
+
+- `NICO_BASE_DOMAIN`, `NICO_API_IP` (node IP; DNS for
+  `api.<name>.<domain>`, `*.apps.<name>.<domain>` must resolve to it),
+  `NICO_GW`, and `NICO_DNS` are required.
+- Optional: `NICO_CLUSTER_NAME` (default `nico-lab`),
+  `NICO_OPENSHIFT_VERSION` (default `4.22.7-multi`), `NICO_PULL_SECRET`
+  (default `openshift_pull.json` — a path next to the Makefile or absolute),
+  `NICO_NETMASK` (default `24`), and VM sizing `NICO_RAM` / `NICO_VCPUS` /
+  `NICO_DISK1` / `NICO_DISK2` (default 41 GB / 14 / 120+80 GiB). All
+  defaults live in `cluster/bootstrap.sh`.
+- Host prerequisites: `aicli` installed and authenticated, libvirt
+  (`virt-install`), and a Linux bridge on the network that hosts
+  `NICO_API_IP` (auto-detected; override with `NICO_BRIDGE`).
+- Idempotent: if the cluster is already installed in aicli, the run only
+  (re)downloads the kubeconfig and LVM state.
+
+When it finishes, point `oc` at the new cluster:
+
+```bash
+export KUBECONFIG=$PWD/cluster/kubeconfig
+```
+
+then continue with the normal flow below.
+
+Tear the bootstrapped cluster and VM down again with:
+
+```bash
+make bootstrap-clean
+```
+
 ## Deployment
+
+The upstream charts come from the read-only `helm/vendor/infra-controller`
+submodule. A few OpenShift-breaking issues live in helm hook resources, which
+kustomize post-renderers cannot patch, so `make patch-vendor` applies a git
+patch before any deploy (wired into `helm-dep-build` and `deploy-site`; see
+`patches/vendor/README.md`).
 
 ### 1. Operators and ClusterIssuers
 
@@ -108,8 +160,10 @@ make vault-init
 
 ### 6. NICo Core
 
-Installs the upstream `nico` chart with values overrides and kustomize
-patches (Crunchy secret keys, SCC fixes, migration fixes).
+Installs the upstream `nico` umbrella chart (Core, Flow, and the site
+workloads) with values overrides and kustomize patches (Crunchy secret keys,
+SCC fixes, migration fixes). Flow ships inside this chart — there is no
+standalone Flow deploy.
 
 ```bash
 make deploy-site

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# LVMCluster: no deviceSelector, so LVMS auto-selects all free disks —
+# the 80 GiB spare disk created by cluster/bootstrap.sh. Produces
+# StorageClass lvms-vg1, marked default by the bootstrap script.
+
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: my-lvmcluster
+  namespace: openshift-storage
+spec:
+  storage:
+    deviceClasses:
+    - name: vg1
+      thinPoolConfig:
+        name: thin-pool-1
+        sizePercent: 90
+        overprovisionRatio: 10

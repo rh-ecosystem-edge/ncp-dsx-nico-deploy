@@ -1,0 +1,33 @@
+diff --git a/helm/charts/nico-api/templates/migration-job.yaml b/helm/charts/nico-api/templates/migration-job.yaml
+index 4717642dc..9c40a0fe4 100644
+--- a/helm/charts/nico-api/templates/migration-job.yaml
++++ b/helm/charts/nico-api/templates/migration-job.yaml
+@@ -40,7 +40,9 @@ spec:
+             - name: DATASTORE_USER
+               valueFrom:
+                 secretKeyRef:
+-                  key: username
++                  # Crunchy PGO pguser secrets use key "user" not "username".
++                  # (Kustomize post-renderer patches cannot reach helm hook resources.)
++                  key: user
+                   name: {{ .Values.envFrom.databaseCredentials.secretName }}
+             - name: DATASTORE_PASSWORD
+               valueFrom:
+diff --git a/helm/rest/nico-rest/charts/nico-rest-db/templates/migration-job.yaml b/helm/rest/nico-rest/charts/nico-rest-db/templates/migration-job.yaml
+index dd616284d..c9542223e 100644
+--- a/helm/rest/nico-rest/charts/nico-rest-db/templates/migration-job.yaml
++++ b/helm/rest/nico-rest/charts/nico-rest-db/templates/migration-job.yaml
+@@ -29,10 +29,11 @@ spec:
+       # 1000 is the `nvs` user the migrations image declares. `pg_isready` in
+       # the init container is a client binary that writes nothing, so it runs
+       # under the same UID without needing anything from its own image.
++      # OpenShift (restricted-v2): UID/GID are auto-assigned from the
++      # namespace range; pinning 1000 is rejected by SCC. (Post-renderer
++      # kustomize patches cannot reach helm hook resources.)
+       securityContext:
+         runAsNonRoot: true
+-        runAsUser: 1000
+-        fsGroup: 1000
+       initContainers:
+         - name: wait-for-postgres
+           image: {{ if and .Values.waitForPostgres.repository .Values.waitForPostgres.tag }}{{ .Values.waitForPostgres.repository }}:{{ .Values.waitForPostgres.tag }}{{ else }}{{ .Values.waitForPostgres.image }}{{ end }}

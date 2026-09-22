@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Workaround CatalogSource for the LVMS operator: points at the previous
+# OCP minor's Red Hat operator index (e.g. v4.21 on a 4.22 cluster).
+# <OLM_VERSION> is substituted by cluster/bootstrap.sh.
+
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: redhat-operators-v<OLM_VERSION>
+  namespace: openshift-marketplace
+spec:
+  displayName: Red Hat Operators v<OLM_VERSION>
+  image: registry.redhat.io/redhat/redhat-operator-index:v<OLM_VERSION>
+  priority: -100
+  publisher: Red Hat
+  sourceType: grpc
+  updateStrategy:
+    registryPoll:
+      interval: 10m

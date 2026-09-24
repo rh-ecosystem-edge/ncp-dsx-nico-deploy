@@ -1,0 +1,114 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# End-to-end deploy against a real OpenShift cluster, driven entirely by the
+# repo's Makefile targets. Manual-only (workflow_dispatch): it mutates a live
+# cluster, so it must never run automatically on push/PR.
+#
+# Required repo/environment secrets:
+#   OPENSHIFT_SERVER_URL  - API server URL of the target cluster (https://...:6443)
+#   OPENSHIFT_TOKEN       - Bearer token for a user/ServiceAccount with enough
+#                           privilege to install OLM operators, CRDs and
+#                           ClusterIssuers (effectively cluster-admin).
+#
+# The target cluster must already satisfy this repo's Prerequisites (see
+# README.md): OpenShift 4.21+, and a default StorageClass with dynamic RWO
+# provisioning. This workflow does not provision a cluster or storage.
+---
+name: Deploy End-to-End (OpenShift)
+
+on:
+  workflow_dispatch:
+    inputs:
+      site_name:
+        description: 'Base name for the NICo site created by deploy-site-agent (the run ID is appended)'
+        required: false
+        default: 'gha-e2e'
+      mat:
+        description: 'Use the machine-a-tron test overlay for Core siteConfig (no real DPU/host hardware required)'
+        type: boolean
+        required: false
+        default: true
+      insecure_skip_tls_verify:
+        description: 'Skip TLS verification when logging into the OpenShift API (needed for self-signed API certs)'
+        type: boolean
+        required: false
+        default: true
+
+# Serialize runs so two workflow runs never deploy/undeploy against the same
+# cluster at the same time.
+concurrency:
+  group: nico-deploy-e2e
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Run all steps inside a UBI container instead of directly on the Ubuntu
+    # runner, matching this repo's Red Hat/UBI convention. The image has no
+    # USER directive (defaults to root), so package installs need no sudo.
+    container:
+      image: registry.access.redhat.com/ubi10/ubi:latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      # git must exist before actions/checkout runs (needed for submodule
+      # checkout); tar/gzip are needed by the tool-installer actions below
+      # to unpack their downloads. None of this is on the base ubi10/ubi image.
+      - name: Install OS prerequisites
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            git tar gzip which openssh-clients jq curl podman python3-pip make openssl
+          python3 -m pip install --no-cache-dir pyyaml
+          dnf clean all
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install oc
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          oc: "4"
+
+      # kustomize isn't published on the OpenShift mirror (only oc/helm/etc.
+      # are); it's only available from this action's "github" source.
+      - name: Install kustomize
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          source: github
+          github_pat: ${{ github.token }}
+          kustomize: "5"
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Log in to OpenShift
+        id: login
+        uses: redhat-actions/oc-login@v1
+        with:
+          openshift_server_url: ${{ secrets.OPENSHIFT_SERVER_URL }}
+          openshift_token: ${{ secrets.OPENSHIFT_TOKEN }}
+          insecure_skip_tls_verify: ${{ inputs.insecure_skip_tls_verify }}
+
+      - name: Check prerequisites
+        run: make check-prereqs
+
+      - name: Deploy cloud profile (prereqs, PG, Keycloak, Temporal, nico-rest)
+        run: make deploy-all-cloud
+
+      - name: Deploy site profile (PG, Vault, NATS, nico Core, Flow)
+        run: make deploy-all-site MAT=${{ inputs.mat && '1' || '' }}
+
+      - name: Register site and deploy site-agent
+        run: make deploy-site-agent SITE_NAME="${{ inputs.site_name }}-${{ github.run_id }}"
+
+      - name: Show deployment status
+        if: always()
+        run: make status
+
+      - name: Tear down
+        if: always() && steps.login.outcome == 'success'
+        run: printf 'yes\n' | make undeploy

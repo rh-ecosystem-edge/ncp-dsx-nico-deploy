@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# LVM Storage (LVMS) operator: namespace, OperatorGroup, and Subscription.
+# <CATALOG_SOURCE_NAME> is substituted by cluster/bootstrap.sh
+# (the workaround catalog, or redhat-operators with NICO_OLM_WORKAROUND=false).
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-storage
+  labels:
+    openshift.io/cluster-monitoring: "true"
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: openshift-storage-operatorgroup
+  namespace: openshift-storage
+spec:
+  targetNamespaces:
+  - openshift-storage
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: lvms-operator
+  namespace: openshift-storage
+spec:
+  name: lvms-operator
+  source: <CATALOG_SOURCE_NAME>
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic

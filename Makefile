@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: check-prereqs
+.PHONY: check-prereqs bootstrap-cluster bootstrap-clean patch-vendor
 .PHONY: docker-build-ubi docker-push-ubi docker-build-core docker-push-core docker-build-nicocli docker-push-nicocli helm-dep-build helm-lint helm-template
 .PHONY: build-machine-a-tron bootstrap-machine-a-tron machine-a-tron-status
 .PHONY: deploy-prereqs deploy-cloud-infra deploy-cloud
-.PHONY: deploy-site-infra vault-init vault-admin-cert ensure-ssh-host-key deploy-site deploy-site-agent deploy-flow
+.PHONY: deploy-site-infra vault-init vault-admin-cert ensure-ssh-host-key deploy-site deploy-site-agent
 .PHONY: deploy-all-cloud patch-keycloak-route bootstrap-org deploy-all-site status undeploy
 .PHONY: reset-dpu-endpoint
 
@@ -16,7 +16,6 @@ UPSTREAM ?= helm/vendor/infra-controller
 NICO_REST_CHART := $(UPSTREAM)/helm/rest/nico-rest
 NICO_CORE_CHART := $(UPSTREAM)/helm
 NICO_SITE_AGENT_CHART := $(UPSTREAM)/helm/rest/nico-rest-site-agent
-NICO_FLOW_CHART := $(UPSTREAM)/helm/charts/nico-flow
 NICO_TEMPORAL_CHART := $(UPSTREAM)/rest-api/temporal-helm/temporal
 
 # Image configuration
@@ -33,7 +32,6 @@ MAT_NAMESPACE ?= nico-system
 # Off by default so `make deploy-site` cannot ship the bypass flags.
 MAT_VALUES := helm/values/nico-core-mat.yaml
 MAT ?=
-MAT_VALUES_FLAG := $(if $(MAT),-f $(MAT_VALUES),)
 
 # Site-config values layered onto nico-core.yaml. The base disables siteConfig
 # (no pools) so `make deploy-site` never silently ships RBAC bypasses; Core
@@ -121,6 +119,43 @@ check-prereqs:
 	else \
 		echo "All prerequisites satisfied."; \
 	fi
+
+# =============================================================================
+# Cluster Bootstrap (optional) — create the OpenShift cluster NICo deploys onto
+# =============================================================================
+# NICo itself is entirely day-2. This target is for fresh test beds: it
+# installs a single-node OpenShift (SNO) on a local libvirt VM (static IP)
+# via the Assisted Installer, plus LVM Storage so a default StorageClass
+# exists. Self-contained in cluster/bootstrap.sh — a trimmed SNO-only
+# extraction of the rh-ecosystem-edge/openshift-dpf cluster chain; nothing
+# DPU/DPF-related runs. Idempotent: an already-installed cluster just
+# (re)downloads its kubeconfig.
+#
+# Required: NICO_BASE_DOMAIN, NICO_API_IP (node IP; DNS for
+# api.<name>.<domain> and *.apps.<name>.<domain> must resolve to it),
+# NICO_GW, NICO_DNS. All other NICO_* vars (name, version, pull secret,
+# netmask, VM sizing, bridge) have defaults in cluster/bootstrap.sh —
+# empty values passed here fall through to those defaults.
+# Host prerequisites: authenticated aicli, libvirt (virt-install), and a
+# bridge (default mgmt-br) on the network that hosts NICO_API_IP.
+
+bootstrap-cluster:
+	@bash cluster/bootstrap.sh install \
+		NICO_CLUSTER_NAME='$(NICO_CLUSTER_NAME)' \
+		NICO_BASE_DOMAIN='$(NICO_BASE_DOMAIN)' \
+		NICO_API_IP='$(NICO_API_IP)' \
+		NICO_GW='$(NICO_GW)' \
+		NICO_DNS='$(NICO_DNS)' \
+		NICO_NETMASK='$(NICO_NETMASK)' \
+		NICO_OPENSHIFT_VERSION='$(NICO_OPENSHIFT_VERSION)' \
+		NICO_PULL_SECRET='$(NICO_PULL_SECRET)' \
+		NICO_VM_PREFIX='$(NICO_VM_PREFIX)'
+
+bootstrap-clean:
+	@bash cluster/bootstrap.sh clean \
+		NICO_CLUSTER_NAME='$(NICO_CLUSTER_NAME)' \
+		NICO_VM_PREFIX='$(NICO_VM_PREFIX)' \
+		NICO_DISK_PATH='$(NICO_DISK_PATH)'
 
 # =============================================================================
 # Container Images
@@ -219,8 +254,29 @@ machine-a-tron-status:
 # Helm Charts
 # =============================================================================
 
+# Patches for the read-only upstream submodule. Kustomize post-renderers are
+# not applied to helm hook resources, so OpenShift-breaking bits in
+# pre-install hook templates are fixed with a git patch instead. See
+# patches/vendor/README.md. Idempotent: skips if already applied, fails
+# loudly if the submodule commit moved so the patch no longer applies.
+VENDOR_PATCH := patches/vendor/infra-controller.patch
+
+patch-vendor:
+	git submodule update --init
+	@cd $(UPSTREAM) && \
+	if git apply --reverse --check $(CURDIR)/$(VENDOR_PATCH) >/dev/null 2>&1; then \
+		echo "Vendor patch already applied"; \
+	elif git apply --check $(CURDIR)/$(VENDOR_PATCH) >/dev/null 2>&1; then \
+		git apply $(CURDIR)/$(VENDOR_PATCH) && echo "Vendor patch applied"; \
+	else \
+		echo "ERROR: $(VENDOR_PATCH) does not apply to the checked-out $(UPSTREAM) commit." >&2; \
+		echo "The submodule may have moved — rebase the patch or update the pin." >&2; \
+		exit 1; \
+	fi
+
 helm-dep-build:
 	git submodule update --init
+	$(MAKE) patch-vendor
 	helm repo add temporal https://go.temporal.io/helm-charts --force-update
 	helm repo add hashicorp https://helm.releases.hashicorp.com --force-update
 	helm repo add nats https://nats-io.github.io/k8s/helm/charts/ --force-update
@@ -480,7 +536,7 @@ ensure-ssh-host-key:
 			--from-file=ssh_host_ed25519_key_pub="$$TMPDIR/ssh_host_ed25519_key.pub" \
 	)
 
-deploy-site: ensure-ssh-host-key
+deploy-site: ensure-ssh-host-key patch-vendor
 	@# extraDnsNames[0]: legacy DPU agent compatibility (issue #2823).
 	@# extraDnsNames[1]: passthrough route hostname so nico-admin-cli can
 	@#   connect via the route without TLS hostname mismatch (the server cert
@@ -559,12 +615,11 @@ endif
 		--set envConfig.TEMPORAL_SUBSCRIBE_NAMESPACE=$$SITE_ID_VAL \
 		--set bootstrap.enabled=true
 
-deploy-flow:
-	helm upgrade --install -n nico-system nico-flow \
-		$(NICO_FLOW_CHART) --wait --timeout 5m \
-		-f helm/values/nico-core.yaml $(MAT_VALUES_FLAG)
+# NOTE: there is no standalone deploy-flow target — Flow ships inside the
+# nico-core umbrella chart (values: nico-flow.enabled=true), so installing it
+# separately collides on the namespace and the `flow` ServiceAccount.
 
-deploy-all-site: deploy-site-infra vault-init deploy-site deploy-flow
+deploy-all-site: deploy-site-infra vault-init deploy-site
 
 # =============================================================================
 # CRC (single-node) — overrides for local development on CodeReady Containers
@@ -587,7 +642,7 @@ deploy-site-infra-crc: helm-dep-build
 		$(CRC_VAULT_OVERRIDES)
 
 deploy-all-cloud-crc: deploy-prereqs deploy-cloud-infra-crc deploy-cloud
-deploy-all-site-crc: deploy-site-infra-crc vault-init deploy-site deploy-flow
+deploy-all-site-crc: deploy-site-infra-crc vault-init deploy-site
 
 # =============================================================================
 # Status and Cleanup

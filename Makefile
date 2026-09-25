@@ -47,10 +47,15 @@ SITE_CONFIG_FLAG := $(if $(MAT),-f $(MAT_VALUES),-f $(SITE_VALUES))
 # Vault topology auto-selection. HA (3-node Raft) needs >=3 schedulable nodes;
 # a single-node (SNO/VM) or 2-node cluster falls back to standalone Vault (file
 # storage) so the default `make deploy-all-site` works everywhere without a
-# separate -crc variant. Detection runs `oc get nodes`; if oc is unreachable
-# (count 0) it defaults to standalone, which deploys anywhere. Force explicitly
-# with VAULT_MODE=ha or VAULT_MODE=standalone.
-NODE_COUNT := $(shell oc get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+# separate -crc variant. "Schedulable" excludes nodes with a NoSchedule/
+# NoExecute taint (control-plane, infra, etc.) — the vault chart's default
+# hard pod anti-affinity needs one *untainted* node per replica, and counting
+# tainted nodes here causes `deploy-site-infra` to pick ha on clusters that
+# don't actually have 3 nodes free to run it (FailedScheduling: pod anti-
+# affinity + untolerated taints). Detection runs `oc get nodes -o json` + jq;
+# if oc/jq are unreachable (empty result) it defaults to standalone, which
+# deploys anywhere. Force explicitly with VAULT_MODE=ha or VAULT_MODE=standalone.
+NODE_COUNT := $(shell oc get nodes -o json 2>/dev/null | jq '[.items[] | select((.spec.unschedulable != true) and (([.spec.taints[]? | select(.effect=="NoSchedule" or .effect=="NoExecute")] | length) == 0))] | length' 2>/dev/null)
 VAULT_MODE ?= $(if $(filter-out 0 1 2,$(NODE_COUNT)),ha,standalone)
 # CRC_VAULT_OVERRIDES is defined further down; use recursive '=' so it resolves
 # at recipe time regardless of definition order.
@@ -351,7 +356,7 @@ bootstrap-org:
 # =============================================================================
 
 deploy-site-infra: helm-dep-build
-	@echo "=== Vault topology: $(VAULT_MODE) (detected $(NODE_COUNT) node(s)) ==="
+	@echo "=== Vault topology: $(VAULT_MODE) (detected $(NODE_COUNT) schedulable node(s)) ==="
 	helm upgrade --install -n nico-system nico-site-infra \
 		helm/infra-site/ \
 		--create-namespace --timeout 15m \

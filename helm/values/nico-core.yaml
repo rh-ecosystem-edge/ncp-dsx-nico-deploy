@@ -44,11 +44,15 @@ nico-api:
   # Service to live in (createNamespace defaults to false upstream).
   legacyAlias:
     enabled: false
-  bootArtifactContainers: []
-  # Uncomment and configure for your architecture:
-  # - name: boot-artifacts-x86-64
-  #   image: <registry>/boot-artifacts-x86_64:latest
-  #   command: ["sh", "-c", "cp -r /x86_64 /boot-artifacts/blobs/internal"]
+  # x86_64 boot artifacts (scout kernel, initrd, squashfs). Replace with
+  # your own image if targeting a different architecture or artifact set.
+  bootArtifactContainers:
+    - name: boot-artifacts-x86-64
+      image: quay.io/alosadag/boot-artifacts-x86_64:latest-amd64
+      command: ["sh", "-c", "cp -r /x86_64 /forge-boot-artifacts/blobs/internal"]
+    # - name: boot-artifacts-aarch64
+    #   image: <registry>/boot-artifacts-aarch64:latest
+    #   command: ["sh", "-c", "cp -r /aarch64 /apt /firmware /boot-artifacts/blobs/internal"]
   resources:
     requests:
       cpu: 250m
@@ -158,14 +162,15 @@ nico-pxe:
   # Same as nico-api.legacyAlias above — forge-system namespace we don't own.
   legacyAlias:
     enabled: false
-  bootArtifactContainers: []
-  # Uncomment and configure for your architecture:
-  # - name: boot-artifacts-x86-64
-  #   image: <registry>/boot-artifacts-x86_64:latest
-  #   command: ["sh", "-c", "cp -r /x86_64 /boot-artifacts/blobs/internal"]
-  # - name: boot-artifacts-aarch64
-  #   image: <registry>/boot-artifacts-aarch64:latest
-  #   command: ["sh", "-c", "cp -r /aarch64 /apt /firmware /boot-artifacts/blobs/internal"]
+  # x86_64 boot artifacts (scout kernel, initrd, squashfs). Replace with
+  # your own image if targeting a different architecture or artifact set.
+  bootArtifactContainers:
+    - name: boot-artifacts-x86-64
+      image: quay.io/alosadag/boot-artifacts-x86_64:latest-amd64
+      command: ["sh", "-c", "cp -r /x86_64 /forge-boot-artifacts/blobs/internal"]
+    # - name: boot-artifacts-aarch64
+    #   image: <registry>/boot-artifacts-aarch64:latest
+    #   command: ["sh", "-c", "cp -r /aarch64 /apt /firmware /boot-artifacts/blobs/internal"]
 nico-ssh-console-rs:
   enabled: true
   # Chart hardcodes port 22 in its static config.toml — same ambient-

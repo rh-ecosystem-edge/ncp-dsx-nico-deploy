@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Mount the scout cloud-init ConfigMap so snippets survive pod restarts.
+- op: add
+  path: /spec/template/spec/volumes/-
+  value:
+    name: scout-cloud-init
+    configMap:
+      name: scout-cloud-init-snippets
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value:
+    name: scout-cloud-init
+    mountPath: /forge-boot-artifacts/blobs/internal/cloud-init.d/scout
+    readOnly: true

@@ -5,6 +5,11 @@ kind: Kustomization
 
 resources:
   - all.yaml
+  # Scout cloud-init snippet: sets ubuntu/ubuntu SSH credentials on the
+  # discovery OS so operators can debug scout in-situ via iDRAC console or
+  # SSH. Only needed during bare-metal bring-up; remove once machines are
+  # fully discovered and provisioned.
+  - scout-cloud-init.yaml
   # Bare-metal emulation for testing (see machine-a-tron-testing-guide.md).
   # Disabled for this real (non-MAT) deploy — image isn't built and it wastes
   # a scheduling slot on the single node. Re-enable for machine-a-tron testing.
@@ -100,7 +105,7 @@ patches:
       kind: Service
       name: nico-dns
 
-  # Remap unbound ports 53 → 5353 (same pattern as nico-dns, avoids anyuid SCC)
+# Remap unbound ports 53 → 5353 (same pattern as nico-dns, avoids anyuid SCC)
   - path: patches/fix-unbound-port.yaml
     target:
       kind: Deployment
@@ -112,3 +117,11 @@ patches:
     target:
       kind: ConfigMap
       name: unbound-local-config
+
+  # Mount scout cloud-init snippets in nico-pxe. Pairs with the
+  # scout-cloud-init.yaml ConfigMap resource above. Remove both when
+  # debug access to scout is no longer needed.
+  - path: patches/fix-pxe-scout-cloud-init.yaml
+    target:
+      kind: Deployment
+      name: nico-pxe

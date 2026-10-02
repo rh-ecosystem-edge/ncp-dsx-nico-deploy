@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cloud-init snippet for the scout discovery OS. Sets ubuntu/ubuntu SSH
+# credentials so operators can debug scout in-situ via iDRAC console or SSH.
+# Only needed during bare-metal bring-up; remove once machines are fully
+# discovered and provisioned.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scout-cloud-init-snippets
+  namespace: nico-system
+data:
+  10-debug-access.yaml: |
+    #cloud-config
+    ssh_pwauth: true
+    chpasswd:
+      expire: false
+      users:
+        - name: ubuntu
+          password: ubuntu
+          type: text
+    runcmd:
+      - systemctl restart sshd || true

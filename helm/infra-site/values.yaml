@@ -245,7 +245,15 @@ nico-rest-common:
 
 # MetalLB operand (CR + IPAddressPool + L2Advertisement) for the dataplane VIPs.
 # Neutral by default — supply addresses/interfaces per-site via SITE_INFRA_VALUES
-# (see helm/values/infra-site-example.yaml).
+# (see helm/values/infra-site-example.yaml for a dedicated provisioning NIC, or
+# helm/values/infra-site-flat-example.yaml for a FLAT network).
+#
+# interfaces is optional:
+#   - []            : FLAT network — advertise the pool on all node interfaces
+#                     (VIPs live on the primary/cluster network). Keep
+#                     nodeNetwork.enabled=false.
+#   - [<nic>]       : pin the L2 advertisement to a dedicated provisioning NIC
+#                     (pair with nodeNetwork below for its static IP).
 metallb:
   enabled: false
   namespace: metallb-system

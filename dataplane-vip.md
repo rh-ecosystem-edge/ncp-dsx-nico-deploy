@@ -35,6 +35,43 @@ normal OpenShift Routes. `unbound` runs non-privileged — the existing
 `fix-unbound-port` kustomize patch remaps it to `:5353`, and the external Service
 presents `:53`.
 
+## FLAT network mode (VIPs on the primary network)
+
+The flow above targets a **dedicated provisioning VLAN** on a secondary NIC. If
+your provisioning services live on the **same (flat) network as the nodes** —
+e.g. a lab where the hub nodes and the trays share one subnet — use FLAT mode
+instead. It is simpler and avoids the NNCP and the OVN local-gateway tweak:
+
+| | Dedicated VLAN (default) | FLAT mode |
+|---|---|---|
+| L2 advertisement | pinned to the NIC (`metallb.interfaces`) | all interfaces (`interfaces: []`) |
+| Static NIC IP | NNCP (`nodeNetwork.enabled: true`) | not needed (`nodeNetwork.enabled: false`) |
+| OVN local-gateway | required | not needed (VIPs are on `br-ex`) |
+| VIPs | one shared VIP + `allow-shared-ip` | one VIP per service (or shared — your choice) |
+
+With OpenShift's default shared-gateway OVN mode, LoadBalancer VIPs on the
+**primary** network are serviced on `br-ex` natively, so none of the
+secondary-NIC caveats below apply.
+
+**Configure:** copy `helm/values/infra-site-flat-example.yaml` to
+`helm/values/infra-site-<site>.yaml` (pool range on the node subnet,
+`interfaces: []`, `nodeNetwork.enabled: false`), set the per-service
+`loadBalancerIP`s in your `nico-core-<site>.yaml`, and deploy with:
+
+```bash
+make deploy-site-infra SITE_INFRA_VALUES=helm/values/infra-site-<site>.yaml
+```
+
+Do **not** use `make deploy-dataplane-vip` for FLAT — it requires
+`DATAPLANE_NIC`/`DATAPLANE_NODE_IP` (the secondary-VLAN path). Only the
+**dedicated-NIC VLAN prerequisite**, the **NNCP**, and the **OVN local-gateway**
+instructions in the rest of this document are specific to the dedicated-VLAN
+flow and do not apply to FLAT. The provisioning prerequisites **still apply to
+FLAT**: a real **`siteConfig`** (networks/pools) in your `nico-core-<site>.yaml`
+(item 5 of Prerequisites), and a **DHCP relay** (`ip helper-address <nico-dhcp
+VIP>`, item 4) whenever the provisioned hosts are not on the same L2 segment as
+the `nico-dhcp` VIP.
+
 ## The one non-obvious constraint
 
 MetalLB L2 advertises the VIP on the node's **secondary** VLAN NIC. With

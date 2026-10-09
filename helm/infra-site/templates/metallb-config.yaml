@@ -3,14 +3,18 @@ SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 
 MetalLB operand: controller/speaker (MetalLB CR), the dataplane VIP pool, and
-an L2 advertisement pinned to the dataplane interface. The operator and CRDs
-are installed by the prereqs chart; the wait-operators job gates on the CRDs
-so these apply cleanly.
+an L2 advertisement. The operator and CRDs are installed by the prereqs chart;
+the wait-operators job gates on the CRDs so these apply cleanly.
+
+interfaces is optional:
+  - Secondary/dedicated provisioning NIC: list it to pin the L2 advertisement
+    to that interface (pair with nodeNetwork for its static IP).
+  - FLAT network (VIPs on the primary/cluster network): leave it empty and
+    MetalLB advertises the pool on all node interfaces.
 */}}
 
 {{- if .Values.metallb.enabled }}
 {{- if not .Values.metallb.addresses }}{{- fail "metallb.enabled=true requires metallb.addresses (set it in your infra-site-<site>.yaml override)" }}{{- end }}
-{{- if not .Values.metallb.interfaces }}{{- fail "metallb.enabled=true requires metallb.interfaces (the dataplane NIC)" }}{{- end }}
 apiVersion: metallb.io/v1beta1
 kind: MetalLB
 metadata:
@@ -36,6 +40,8 @@ metadata:
 spec:
   ipAddressPools:
     - {{ .Values.metallb.poolName }}
+  {{- with .Values.metallb.interfaces }}
   interfaces:
-    {{- toYaml .Values.metallb.interfaces | nindent 4 }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 {{- end }}

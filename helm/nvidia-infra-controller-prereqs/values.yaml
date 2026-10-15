@@ -36,16 +36,6 @@ externalSecrets:
 clusterIssuers:
   enabled: true
 
-# MetalLB operator — LoadBalancer VIPs for NICo site services on a dedicated
-# provisioning VLAN. Off by default; enable per-site (see helm/values/prereqs-example.yaml).
-metallb:
-  enabled: false
-  channel: stable
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-  installPlanApproval: Automatic
-  namespace: metallb-system
-
 # kubernetes-nmstate operator — declarative node network config (NNCP) to give
 # the dataplane NIC a static IP so MetalLB can advertise on it. Off by default.
 nmstate:

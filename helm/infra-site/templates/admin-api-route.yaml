@@ -1,0 +1,42 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Passthrough Route exposing the Core gRPC API (nico-api:1079) outside the
+cluster so admins can run nico-admin-cli from a workstation over mTLS, instead
+of `oc exec`-ing into the pod.
+
+termination: passthrough is REQUIRED — the admin client cert must reach nico-api
+end-to-end (edge/reencrypt would terminate TLS at the router and strip the
+client cert, breaking mTLS). The OpenShift router selects the backend purely by
+TLS SNI, so:
+
+  * the client connects to (and sends SNI for) this Route's host, and
+  * nico-api's serving cert MUST carry that host as a SAN — the CLI has no
+    server-name override, so it verifies the server against the URL host.
+
+Add the host below to nico-api.certificate.extraDnsNames (see
+helm/values/nico-core-site.yaml). Disabled by default: exposing the Core admin
+API beyond the cluster is a deliberate, security-reviewed decision.
+*/}}
+{{- if (.Values.adminApiRoute).enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: nico-api-grpc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.adminApiRoute.host }}
+  host: {{ . | quote }}
+  {{- end }}
+  to:
+    kind: Service
+    name: nico-api
+  port:
+    targetPort: grpc
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: None
+{{- end }}

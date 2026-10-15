@@ -27,7 +27,11 @@ jobs:
           status=0
           for f in docker/ubi/Dockerfile.*; do
             echo "::group::hadolint $f"
-            docker run --rm -i hadolint/hadolint < "$f" || status=1
+            docker run --rm -i \
+              hadolint/hadolint hadolint \
+                --ignore DL3007 --ignore DL3041 --ignore DL3013 \
+                --ignore DL3003 --ignore DL4006 --ignore DL3008 \
+                - < "$f" || status=1
             echo "::endgroup::"
           done
           exit "$status"

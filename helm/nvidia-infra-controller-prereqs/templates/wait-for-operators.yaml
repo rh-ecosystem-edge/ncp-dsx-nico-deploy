@@ -6,7 +6,7 @@ Waits for operator CRDs to be available before Crunchy PostgreSQL
 clusters and cert-manager Certificates can be created.
 */}}
 
-{{- if or .Values.certManager.enabled .Values.crunchyPostgres.enabled .Values.externalSecrets.enabled .Values.metallb.enabled .Values.nmstate.enabled }}
+{{- if or .Values.certManager.enabled .Values.crunchyPostgres.enabled .Values.externalSecrets.enabled }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -58,77 +58,54 @@ spec:
       serviceAccountName: {{ .Release.Name }}-wait-operators
       containers:
         - name: wait
-          image: registry.redhat.io/ubi9/ubi-minimal:latest
+          image: registry.redhat.io/openshift4/ose-cli:latest
           command:
             - /bin/sh
             - -c
             - |
-              TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-              API=https://kubernetes.default.svc
-              CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-              HDRFILE=$(mktemp)
-              chmod 600 "$HDRFILE"
-              printf 'Authorization: Bearer %s\n' "$TOKEN" > "$HDRFILE"
-              trap 'rm -f "$HDRFILE"' EXIT
-              unset TOKEN
-
-              wait_crd() {
-                echo "Waiting for CRD $1..."
-                until curl -sf --cacert "$CA" \
-                    -H @"$HDRFILE" \
-                    "$API/apis/apiextensions.k8s.io/v1/customresourcedefinitions/$1" \
-                    >/dev/null 2>&1; do
-                  sleep 5
-                done
-                echo "CRD $1 available"
-              }
-
-              sa() {
-                curl -sf --cacert "$CA" \
-                  -H @"$HDRFILE" \
-                  -H "Content-Type: application/apply-patch+yaml" \
-                  -X PATCH \
-                  "$API$1?fieldManager=prereqs-hook&force=true" \
-                  -d "$2" >/dev/null
-              }
               {{- if .Values.crunchyPostgres.enabled }}
-              wait_crd postgresclusters.postgres-operator.crunchydata.com
+              echo "Waiting for Crunchy PostgreSQL CRD..."
+              until oc get crd postgresclusters.postgres-operator.crunchydata.com > /dev/null 2>&1; do
+                sleep 5
+              done
+              oc wait --for=condition=Established crd postgresclusters.postgres-operator.crunchydata.com --timeout=120s
+              echo "Crunchy PostgreSQL CRD available"
               {{- end }}
               {{- if .Values.certManager.enabled }}
-              wait_crd certificates.cert-manager.io
+              echo "Waiting for cert-manager CRDs..."
+              until oc get crd certificates.cert-manager.io > /dev/null 2>&1; do
+                sleep 5
+              done
+              oc wait --for=condition=Established crd certificates.cert-manager.io --timeout=120s
+              echo "cert-manager CRDs available"
               {{- end }}
               {{- if .Values.externalSecrets.enabled }}
-              wait_crd externalsecrets.external-secrets.io
-              wait_crd externalsecretsconfigs.operator.openshift.io
-              echo "Waiting for ExternalSecretsConfig API endpoint to be ready..."
-              until curl -sf --cacert "$CA" \
-                  -H @"$HDRFILE" \
-                  "$API/apis/operator.openshift.io/v1alpha1/externalsecretsconfigs" \
-                  >/dev/null 2>&1; do
+              echo "Waiting for External Secrets CRDs..."
+              until oc get crd externalsecrets.external-secrets.io > /dev/null 2>&1; do
+                sleep 5
+              done
+              oc wait --for=condition=Established crd externalsecrets.external-secrets.io --timeout=120s
+              echo "External Secrets CRDs available"
+              echo "Waiting for ExternalSecretsConfig CRD..."
+              until oc get crd externalsecretsconfigs.operator.openshift.io > /dev/null 2>&1; do
                 sleep 5
               done
               echo "Creating ExternalSecretsConfig operand..."
-              until curl -s --cacert "$CA" \
-                  -H @"$HDRFILE" \
-                  -H "Content-Type: application/json" \
-                  -X POST \
-                  "$API/apis/operator.openshift.io/v1alpha1/externalsecretsconfigs" \
-                  -d '{"apiVersion":"operator.openshift.io/v1alpha1","kind":"ExternalSecretsConfig","metadata":{"name":"cluster"},"spec":{"managementState":"Managed"}}' \
-                  -o /dev/null -w "%{http_code}" | grep -qE "^(201|409)$"; do
-                echo "Retrying ExternalSecretsConfig creation..."
-                sleep 5
-              done
+              cat <<EOCFG | oc apply -f -
+              apiVersion: operator.openshift.io/v1alpha1
+              kind: ExternalSecretsConfig
+              metadata:
+                name: cluster
+              spec:
+                managementState: Managed
+              EOCFG
               echo "ExternalSecretsConfig created — ESO controller will deploy"
               {{- end }}
-              {{- if .Values.metallb.enabled }}
-              wait_crd ipaddresspools.metallb.io
-              {{- end }}
-              {{- if .Values.nmstate.enabled }}
-              wait_crd nmstates.nmstate.io
-              echo "Creating NMState operand..."
-              sa /apis/nmstate.io/v1/nmstates/nmstate '{"apiVersion":"nmstate.io/v1","kind":"NMState","metadata":{"name":"nmstate"}}'
-              wait_crd nodenetworkconfigurationpolicies.nmstate.io
-              echo "NMState ready — NNCP CRD available"
-              {{- end }}
+              echo "Waiting for RHBK Keycloak CRDs..."
+              until oc get crd keycloaks.k8s.keycloak.org > /dev/null 2>&1; do
+                sleep 5
+              done
+              oc wait --for=condition=Established crd keycloaks.k8s.keycloak.org --timeout=120s
+              echo "RHBK Keycloak CRDs available"
               echo "All operator CRDs ready"
 {{- end }}

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Replaces the Ubuntu rc-local approach for RHEL 10.
+# Downloads scout.squashfs, mounts it via loop+overlay, then soft-reboots
+# into the Scout rootfs. Runs once at multi-user.target.
+[Unit]
+Description=Scout Loader - Download and pivot into Scout rootfs
+DefaultDependencies=no
+After=network-online.target
+Wants=network-online.target
+Before=systemd-user-sessions.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/scout-loader.sh
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,51 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# mkosi postinst hook for scout-rhel10-oss-x86_64 (RHEL 10 Scout rootfs).
+#
+# Based on hack/scout-e2e/postinst.minimal.chroot (the stripped, no-NVIDIA
+# variant). Differences from the Ubuntu postinst:
+#   - No dpkg: forge-scout binary is injected via mkosi.extra at build time
+#   - lldpd config goes to /etc/sysconfig/lldpd (RHEL) not /etc/default/lldpd
+#   - No daily update-check timer or module-loader scripts (upstream concern)
+#
+# The forge-scout.service file is placed by mkosi.extra under
+# /etc/systemd/system/ before this hook runs.
+
+if [ "$1" != "final" ]; then
+  exit 0
+fi
+
+set -Eeux
+
+echo "${PKG_VERSION:-dev}" >/etc/scout-image-version
+
+# lldpd must be running for forge-scout to collect LLDP neighbors via lldpcli.
+# RHEL uses /etc/sysconfig/lldpd rather than /etc/default/lldpd.
+mkdir -p /etc/sysconfig
+echo 'LLDPD_OPTIONS="-M 1"' >/etc/sysconfig/lldpd
+mkdir -p /etc/systemd/system/multi-user.target.wants
+ln -sf /usr/lib/systemd/system/lldpd.service \
+       /etc/systemd/system/multi-user.target.wants/lldpd.service
+
+# ============================================================================
+# FORGE-SCOUT
+# Binary is injected into the image via mkosi.extra at /opt/forge/forge-scout
+# before mkosi invokes this postinst. No dpkg install needed.
+# ============================================================================
+ln -sf /etc/systemd/system/forge-scout.service \
+       /etc/systemd/system/multi-user.target.wants/forge-scout.service
+
+# ============================================================================
+# SANITY: forge-scout present and fully linkable
+# ============================================================================
+if [ ! -e /opt/forge/forge-scout ]; then
+  echo "ERROR: /opt/forge/forge-scout missing"
+  exit 1
+fi
+
+if [ "$(ldd /opt/forge/forge-scout | grep -c 'not found')" != "0" ]; then
+  echo "ERROR: forge-scout has missing libraries, it may not run"
+  exit 1
+fi

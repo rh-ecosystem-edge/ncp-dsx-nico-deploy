@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Enable NetworkManager and chronyd for DHCP + time sync. Same pattern as
+# scout-rhel10-oss. NetworkManager handles all Ethernet interfaces reliably
+# on RHEL 10 virtio NICs; systemd-networkd is not installed in this image.
+enable NetworkManager.service
+enable NetworkManager-wait-online.service
+enable chronyd.service
+enable disk-imaging.service

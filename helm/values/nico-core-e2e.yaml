@@ -1,0 +1,243 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# =============================================================================
+# Phase 7: Add SNO cluster hostnames to unbound so the worker can resolve
+# api-int.sno.nico.test (MCS) and api.sno.nico.test (API server) from the
+# provisioning segment. The worker.ign pointer ignition fetches the full worker
+# config from https://api-int.sno.nico.test:22623/config/worker; without this
+# entry the curl inside coreos-installer fails with NXDOMAIN and the ignition
+# config is never applied. localData here REPLACES the site profile's localData
+# list (Helm replaces lists entirely when layering values files; it does not
+# append). This list must carry all required entries including those from the
+# site profile.
+unbound:
+  localData:
+    - name: carbide-static-pxe.forge
+      addresses: ["192.0.2.13"]
+    - name: carbide-pxe.forge
+      addresses: ["192.0.2.13"]
+    - name: carbide-api.forge
+      addresses: ["192.0.2.10"]
+    # SNO cluster endpoints — needed for the RHCOS worker ignition flow.
+    # The pointer worker.ign fetches its full config from the MCS at :22623.
+    # The installed node's kubelet then communicates with the API at :6443.
+    - name: api-int.sno.nico.test
+      addresses: ["192.168.130.10"]
+    - name: api.sno.nico.test
+      addresses: ["192.168.130.10"]
+#
+# E2E overlay for the NICo + KubeVirt + vbmc-rs + Metal3 flow on self-managed
+# SNO (see e2e-nico-kubevirt-sno.md). Layered ON TOP of the site profile:
+#   make deploy-site E2E=1
+#
+# DESIGN (routable, real ToR fabric + MetalLB VIPs). nico-dhcp (Kea) stays
+# PRISTINE upstream — it binds eth0 with dhcpSocketType udp and is reached over
+# its MetalLB VIP, i.e. it receives RELAYED UNICAST exactly as on a real site
+# fronted by an external DHCP relay + LoadBalancer VIP. NICo's libdhcp.so hook is
+# relay-only by design (it selects the network segment from the relay giaddr), so
+# the e2e faithfully reproduces the real allocation path rather than handing out a
+# plain Kea pool. The provisioning L2 is a real EXTERNAL segment owned by the FRR
+# ToR (nico-tor libvirt VM); the DHCP relay runs ON the ToR (giaddr .253.1 -> the
+# nico-dhcp MetalLB VIP). The in-cluster node-as-fabric shortcut (node-owned
+# bridge IP + hostNetwork dnsmasq relay + socat boot-proxy) is GONE — the
+# return-path spike proved OVN DNATs LoadBalancer traffic arriving on br-ex from a
+# foreign-subnet routed client when the node default gateway is the ToR (see
+# CLAUDE.md "Networking / MetalLB"). The only plain manifests left are the nmstate
+# operator + the node L2 UPLINK bridge (no node IP) that cables the nested worker
+# to the ToR fabric:
+#   * helm/openshift/e2e-nmstate-operator.yaml  (nmstate operator)
+#   * helm/openshift/e2e-provisioning-net.yaml  (node bridge nicoprov0 = L2 uplink)
+#
+# The nico-dhcp port-67 fix (SCC + containerSecurityContext) is NOT here: it is
+# production-general (kea must bind UDP/67 on any OpenShift site, relay or VIP),
+# so it lives in the base site path — containerSecurityContext in
+# helm/values/nico-core.yaml and the SCC applied by every `make deploy-site`.
+#
+# nico-dhcp's boot hookParameters.provisioningServer is NOT overridden here: it
+# inherits the nico-pxe MetalLB VIP (192.0.2.13) from nico-core-site.yaml, so the
+# libdhcp hook builds the UEFI HTTPClient boot URL as
+# http://192.0.2.13:8080/public/blobs/internal/x86_64/ipxe.efi
+# (crates/dhcp/src/machine.rs) — the real VIP, reachable from the worker via the
+# ToR (BGP-advertised /32) with replies returning through the node default gateway
+# = ToR. Likewise the externalService VIP pins for nico-dhcp/nico-pxe/nico-dns/
+# nico-api/nico-ssh-console are inherited from nico-core-site.yaml.
+
+# =============================================================================
+# Real-hardware siteConfig for the e2e (Phase 6).
+#
+# Replaces the whole nicoApiSiteConfig string from nico-core-site.yaml (Helm
+# does not merge a scalar; the last -f wins, and E2E is layered last). It mirrors
+# the production site overlay's networks + pools, and adds only what the KubeVirt
+# worker VM needs to be discovered by a REAL Scout — NOT the MAT bypasses.
+#
+# Deliberately ABSENT (unlike nico-core-mat.yaml): bypass_rbac, [auth]
+# permissive_mode, allow_insecure_discovery. MAT needs those because its
+# *simulated* Scout calls discover_machine from the pod's own IP (never a
+# DHCP-assigned machine_interface address). Our VM runs a REAL Scout from its
+# real HostInband DHCP IP, so the production discovery-source check passes and
+# no insecure-discovery / permissive auth is required.
+nico-api:
+  # Enable the passthrough adminApiRoute so nico-admin-cli can reach Core gRPC
+  # from outside the cluster without a port-forward.
+  adminApiRoute:
+    enabled: true
+    host: nico-api-grpc-nico-system.apps.sno.nico.test
+  # Serving-cert SAN for the passthrough adminApiRoute (infra-site adminApiRoute,
+  # host nico-api-grpc-nico-system.apps.sno.nico.test on this e2e SNO). Replaces
+  # the apps.example.com PLACEHOLDER in nico-core-site.yaml (Helm replaces a list,
+  # so the last -f wins). Required so nico-admin-cli — which verifies the server
+  # against the URL host with no server-name override (crates/admin-cli) — can
+  # reach Core over the real Route with TLS verification instead of a port-forward
+  # + --add-host shim. cert-manager reissues nico-api-certificate with this SAN on
+  # the next `make deploy-site E2E=1`.
+  certificate:
+    # This list REPLACES the site profile's nico-api.certificate.extraDnsNames
+    # (Helm replaces lists; E2E is layered last), so it must carry BOTH the
+    # adminApiRoute host used by nico-admin-cli AND carbide-api.forge — the
+    # upstream compile-time server_uri a REAL Scout uses for its DiscoverMachine
+    # mTLS callback. The worker resolves carbide-api.forge -> the nico-api VIP
+    # (192.0.2.10) via the unbound `.forge` zone (see nico-core-site.yaml unbound:
+    # block); Scout verifies the serving cert against that host with no
+    # server-name override, so the SAN must be the hostname, not the raw VIP IP.
+    # No CARBIDE_API_URL env override and no IP SAN are needed — defaults + DNS.
+    extraDnsNames:
+      - nico-api-grpc-nico-system.apps.sno.nico.test
+      - carbide-api.forge
+  siteConfig:
+    enabled: true
+    nicoApiSiteConfig: |
+      initial_domain_name = "nico.local"
+
+      # The worker VM has no vTPM, so a real Scout on it cannot produce
+      # measured-boot / TPM quotes; without these the host stalls forever in
+      # Measuring / WaitingForMeasurements. These are hardware-capability flags
+      # (the VM genuinely lacks a TPM), not RBAC/discovery security bypasses.
+      attestation_enabled = false
+      tpm_required = false
+
+      # Point the site-explorer's Redfish client at the vbmc-rs virtual BMC.
+      # PortOnly (":8443") keeps the target host = ExpectedMachine.bmc_ip_address
+      # (192.168.2.20, the sticky vbmc-rs BMC IP on the nico-bmc CUDN) and only
+      # overrides the port to 8443, where vbmc-rs serves one-way TLS. No
+      # Forwarded header is injected (host is not overridden), so nico-api talks
+      # to the BMC DIRECTLY over Redfish Basic auth — the faithful current-code
+      # discovery path (our pinned NICo has no static [bmc_proxy] section; that
+      # landed upstream after our pin). nico-api reaches this isolated L2 because
+      # it is dual-homed onto the nico-bmc CUDN (multus). allow_zero_dpu_hosts
+      # lets the NoDpu / HostInband VM reach Ready without a DPU.
+      [site_explorer]
+      run_interval = "10s"
+      allow_zero_dpu_hosts = true
+      bmc_proxy = ":8443"
+
+      # Network segments (mirrors nico-core-site.yaml). oob == the BMC segment
+      # (192.168.2.0/24) == the nico-bmc CUDN subnet; the vbmc-rs BMC at .20 sits
+      # above reserve_first (.1-.10).
+      [networks.oob]
+      type = "underlay"
+      prefix = "192.168.2.0/24"
+      gateway = "192.168.2.1"
+      mtu = 1500
+      reserve_first = 10
+
+      [networks.admin]
+      type = "admin"
+      prefix = "192.168.252.0/24"
+      gateway = "192.168.252.1"
+      mtu = 9000
+      reserve_first = 10
+
+      [networks.hostinband]
+      type = "hostinband"
+      prefix = "192.168.253.0/24"
+      gateway = "192.168.253.1"
+      mtu = 9000
+      reserve_first = 10
+
+      # Resource pools (mirrors nico-core-site.yaml). Required for the API to
+      # start and for tenant/VPC allocation.
+      [pools.lo-ip]
+      type = "ipv4"
+      ranges = [{ start = "10.100.0.1", end = "10.100.0.254" }]
+
+      [pools.vpc-dpu-lo]
+      type = "ipv4"
+      ranges = [{ start = "10.101.0.1", end = "10.101.0.254" }]
+
+      [pools.secondary-vtep-ip]
+      type = "ipv4"
+      ranges = [{ start = "10.102.0.1", end = "10.102.0.254" }]
+
+      [pools.vni]
+      type = "integer"
+      ranges = [{ start = "100000", end = "199999" }]
+
+      [pools.vpc-vni]
+      type = "integer"
+      ranges = [{ start = "200000", end = "299999" }]
+
+      [pools.external-vpc-vni]
+      type = "integer"
+      ranges = [{ start = "300000", end = "399999" }]
+
+      [pools.vlan-id]
+      type = "integer"
+      ranges = [{ start = "100", end = "4094" }]
+
+      [pools.fnn-asn]
+      type = "integer"
+      ranges = [{ start = "4200000000", end = "4200000254" }]
+
+# =============================================================================
+# Seed the discovery boot artifacts into nico-pxe (Phase 6, Scout Posture 3).
+#
+# nico-pxe is a STATELESS boot server: it serves whatever is in its blob tree at
+# /public/blobs/internal/<arch>/<blob> and has NO upload API (the OsImage API is
+# a different layer — the OS installed on an ALLOCATED machine, not the discovery
+# ramdisk). In Kubernetes that tree is an in-pod emptyDir, so the chart-sanctioned
+# way to populate it is `bootArtifactContainers`: each entry becomes an init
+# container that mounts the shared `boot-artifacts` emptyDir at
+# /forge-boot-artifacts/blobs/internal and copies its payload in; the main
+# nico-pxe container mounts the same emptyDir at the same path and serves the
+# union (see nico-pxe chart deployment.yaml + docs/bootable_artifacts.md).
+#
+# The carrier image holds the NVIDIA-free Posture 3 blobs (ipxe.efi, scout.efi,
+# scout.squashfs) built by hack/scout-e2e/build-scout.sh, one dir per arch at the
+# image root. The init container copies /x86_64 -> the served tree, so the worker
+# UEFI-HTTP-boots http://192.0.2.13:8080/public/blobs/internal/x86_64/ipxe.efi
+# (the nico-dhcp boot URL from nico-core-site.yaml). imagePullPolicy: Always so a
+# rebuilt-and-repushed :latest is re-pulled on every pod restart (the image is the
+# source of truth; the emptyDir is repopulated each pod start).
+#
+# Local-testing carrier: quay.io/fdupont-redhat/nico-e2e-boot-artifacts (public);
+# current :latest == sha256:be5a975860f76629cdbae011161538067753f0a415300113666c9d0a45bd3563
+# (ubi-micro base). Add an aarch64 copy once those blobs are built natively.
+nico-pxe:
+  bootArtifactContainers:
+    - name: seed-scout-blobs
+      repository: quay.io/fdupont-redhat/nico-e2e-boot-artifacts
+      tag: latest
+      imagePullPolicy: Always
+      command: ["sh", "-c", "cp -r /x86_64 /forge-boot-artifacts/blobs/internal"]
+  # NOTE: no CARBIDE_*_URL env overrides here. nico-pxe keeps its upstream default
+  # URLs (http://carbide-pxe.forge, https://carbide-api.forge — crates/pxe/src/
+  # config.rs) and the scout.efi loader keeps its baked-in http://carbide-static-
+  # pxe.forge squashfs URL. All three `.forge` names resolve to the nico-pxe /
+  # nico-api MetalLB VIPs through the unbound `.forge` zone the worker uses as its
+  # DHCP-advertised resolver (see nico-core-site.yaml `unbound:` block +
+  # nico-dhcp option-6 nameservers). This is the upstream-faithful path: pinning
+  # raw VIP:port here would only cover the env-driven fetch and still leave the
+  # loader's hardcoded carbide-static-pxe.forge squashfs fetch unresolved.
+  # nico-pxe-external-80 already serves :80 on the VIP for the portless defaults.
+    - name: download-rhcos-rootfs
+      repository: docker.io/alpine
+      tag: latest
+      imagePullPolicy: IfNotPresent
+      command:
+        - sh
+        - -c
+        - |
+          wget -q -O /forge-boot-artifacts/blobs/internal/x86_64/rhcos-live-rootfs.x86_64.img \
+            https://rhcos.mirror.openshift.com/art/storage/prod/streams/rhel-9.8/builds/9.8.20260715-1/x86_64/rhcos-9.8.20260715-1-live-rootfs.x86_64.img
+          echo "rootfs downloaded: $(du -h /forge-boot-artifacts/blobs/internal/x86_64/rhcos-live-rootfs.x86_64.img)"

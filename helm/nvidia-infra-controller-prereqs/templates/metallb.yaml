@@ -1,6 +1,11 @@
 {{/*
 SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
+
+MetalLB operator (Namespace + OperatorGroup + Subscription). The singleton
+MetalLB instance CR is created by the wait-for-operators hook once the CRDs are
+Established; the address pools / advertisements / BGP peers live in
+helm/infra-site (values.metallb), which is deployed after this chart.
 */}}
 
 {{- if .Values.metallb.enabled }}
@@ -15,8 +20,6 @@ metadata:
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
-  # No targetNamespaces: the MetalLB operator only supports AllNamespaces
-  # install mode (rejects OwnNamespace with UnsupportedOperatorGroup).
   name: metallb-operator
   namespace: {{ .Values.metallb.namespace }}
   labels:

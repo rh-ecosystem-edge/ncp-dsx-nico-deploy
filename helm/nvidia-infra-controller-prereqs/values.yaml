@@ -33,18 +33,23 @@ externalSecrets:
   installPlanApproval: Automatic
   namespace: openshift-operators
 
-clusterIssuers:
-  enabled: true
-
-# MetalLB operator — LoadBalancer VIPs for NICo site services on a dedicated
-# provisioning VLAN. Off by default; enable per-site (see helm/values/prereqs-example.yaml).
+# MetalLB — LoadBalancer VIPs for the site-facing Core services (nico-api,
+# nico-dhcp, nico-dns, nico-pxe, nico-ssh-console). Required by the production
+# network model: without MetalLB these Services stay <pending> and the site is
+# unreachable (see CLAUDE.md "Networking / MetalLB"). This block installs only
+# the OPERATOR (Namespace + OperatorGroup + Subscription) and the singleton
+# MetalLB instance CR; the address pools, advertisements and BGP peers are site
+# networking config and live in helm/infra-site (values.metallb).
 metallb:
-  enabled: false
+  enabled: true
   channel: stable
   source: redhat-operators
   sourceNamespace: openshift-marketplace
   installPlanApproval: Automatic
   namespace: metallb-system
+
+clusterIssuers:
+  enabled: true
 
 # kubernetes-nmstate operator — declarative node network config (NNCP) to give
 # the dataplane NIC a static IP so MetalLB can advertise on it. Off by default.

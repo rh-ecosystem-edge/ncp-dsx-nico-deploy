@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# E2E-only DHCP relay (dnsmasq) for the NICo + KubeVirt e2e on self-managed SNO.
+#
+# This is NOT a shipped NICo component. It emulates the physical ToR switch's
+# DHCP relay that a real NICo site provides out-of-cluster: it receives DHCP
+# broadcasts from the worker VMs on the provisioning L2 and forwards them as
+# relayed unicast to nico-dhcp (kea), stamping giaddr = the provisioning gateway
+# so kea's libdhcp hook selects the correct network segment. See
+# helm/openshift/e2e-dhcp-relay.yaml and e2e-nico-kubevirt-sno.md.
+#
+# Mirrors upstream NICo's dev relay (dev/relay.yml): dnsmasq with `port=0`
+# (DHCP relay only, no DNS), an interface, and `dhcp-relay=<giaddr>,<server>`.
+FROM registry.access.redhat.com/ubi10/ubi-minimal:latest
+
+RUN microdnf install -y dnsmasq iproute iputils && \
+    microdnf clean all
+
+# dnsmasq unconditionally looks up its default `dnsmasq` user/group at startup,
+# even when told to run as root (--user=root). ubi-minimal ships no useradd, so
+# the package's %pre could not create it. Create it here so startup succeeds;
+# the pod still passes --user=root so dnsmasq keeps its NET_RAW /
+# NET_BIND_SERVICE capabilities (a dropped, unprivileged dnsmasq user would lose
+# them, since added caps are not promoted to the ambient set on modern CRI-O).
+RUN echo 'dnsmasq:x:990:' >> /etc/group && \
+    echo 'dnsmasq:x:990:990:dnsmasq:/var/lib/dnsmasq:/sbin/nologin' >> /etc/passwd
+
+# dnsmasq runs in the foreground; the relay target + interface are supplied via
+# args in the pod spec so the image carries no site-specific configuration.
+ENTRYPOINT ["/usr/sbin/dnsmasq", "--keep-in-foreground", "--no-daemon", "--log-facility=-"]

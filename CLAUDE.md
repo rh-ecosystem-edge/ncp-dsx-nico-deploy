@@ -96,6 +96,43 @@ nico-bootstrap-issuer (self-signed)
 | Crunchy PostgreSQL | `certified-operators` | Managed PostgreSQL clusters |
 | RHBK (Keycloak) | `redhat-operators` | Identity and access management |
 | External Secrets Operator | `redhat-operators` | Cross-namespace secret sync |
+| MetalLB | `redhat-operators` | LoadBalancer VIPs for site Core services |
+
+## Networking / MetalLB
+
+The production network model fronts the site-facing Core services with **MetalLB
+LoadBalancer VIPs** — without them the Services stay `<pending>` and the site is
+unreachable. Split across the layers per the repo's operator-vs-operand pattern:
+
+- **Operator** (`helm/nvidia-infra-controller-prereqs`, `values.metallb`):
+  Namespace + OperatorGroup + Subscription (`metallb-operator`, channel `stable`,
+  `redhat-operators`). The `wait-for-operators` hook creates the singleton
+  `MetalLB` instance CR once the CRDs are Established and waits for the
+  `controller` deployment (webhook) so the infra-site operands validate.
+- **Network config** (`helm/infra-site`, `values.metallb`): `IPAddressPool`(s),
+  and either `L2Advertisement` (`mode: l2`) or `BGPPeer` + `BGPAdvertisement`
+  (`mode: bgp`). Address ranges are RFC 5737 (`192.0.2.0/24`) placeholders —
+  replace per site.
+- **VIP pinning** (`helm/values/nico-core-site.yaml`): each service enables
+  `externalService` and pins its VIP via
+  `metallb.universe.tf/loadBalancerIPs` (nico-dns uses `perPodAnnotations`
+  instead, one entry per replica; nico-pxe/nico-dns emit multiple Services that
+  share one VIP via `allow-shared-ip`). Every pinned VIP MUST fall inside a pool
+  range. Default placeholders: nico-api `.10`, nico-dhcp `.11`, nico-dns `.12`,
+  nico-pxe `.13`, nico-ssh-console `.14` (in `192.0.2.0/24`). nico-dhcp's Kea
+  boot hook `provisioningServer` points at the nico-pxe VIP so the UEFI
+  HTTPClient boot URL is reachable on the provisioning segment.
+
+**Return-path requirement (load-bearing).** Under OCP OVN shared-gateway mode,
+Service DNAT fires for traffic ingressing OVN-managed interfaces (`br-ex`,
+pods) but NOT a raw secondary bridge. A VIP is reachable from an off-cluster
+client only if OVN's gateway router can RETURN to that client's subnet — and OVN
+GR only learns the node's DEFAULT gateway (+ connected). In production this is
+automatic because **the node's default gateway IS the routing fabric/ToR** that
+MetalLB BGP-peers with, so VIP replies flow back symmetrically. Deployments
+whose node default gateway is NOT the fabric will see forward-only VIP traffic
+(SYN in, reply sent to the wrong next-hop). Verified end-to-end on the e2e SNO
+via an external FRR ToR (spike, 2026-09-17).
 
 ## Directory Structure
 
@@ -152,17 +189,23 @@ All images use UBI 10 base, built by Konflux. Dockerfiles in `docker/ubi/`.
 | nico-psm | ubi10/ubi-micro | psm |
 | nico-nsm | ubi10/ubi-minimal | nsm + scripts + sshpass |
 | nico-core | ubi10/ubi-minimal | carbide-api, dns, bmc-proxy |
-| nico-admin-cli | ubi10/ubi-micro | nico-admin-cli (Core gRPC CLI) |
 | nicocli | ubi10/ubi-micro | nicocli (REST API CLI, from OpenAPI) |
+| nico-admin-cli | ubi10/ubi-micro | nico-admin-cli (Core gRPC admin CLI; binary copied from nico-core image) |
 
-Local build: `make docker-build-ubi` (requires submodule checkout)
+Local build: `make docker-build` (requires submodule checkout)
+
+The `nico-admin-cli` image repackages the CLI binary already built into
+`nico-core`, so it needs no source build — it takes the binary from a Core image
+via the `NICO_CORE_IMAGE` build-arg (default the published `nico-core`). Admins
+run it from a workstation over mTLS against the Core gRPC API exposed by the
+`infra-site` passthrough Route (`adminApiRoute`); see README (nico-admin-cli).
 
 ## Key Makefile Targets
 
 ```
 # Build
-make docker-build-ubi       Build REST images locally
-make docker-build-core      Build Core + admin-cli images locally
+make docker-build           Build all container images locally
+make docker-push            Push all container images to registry
 make helm-dep-build         Build Helm chart dependencies
 make helm-lint              Lint all charts + validate upstream rendering
 make helm-template          Template all charts (dry-run)
@@ -215,15 +258,20 @@ Each kustomize patch maps to one upstream PR:
 
 | Patch | Upstream change |
 |---|---|
-| `fix-core-security-context` | Remove SYS_PTRACE from nico-api |
-| `fix-dsx-exchange-consumer-security-context` | Remove SYS_PTRACE from dsx-exchange-consumer |
-| `fix-credsmgr-securitycontext` | Null securityContext on credsmgr |
 | `fix-core-secret-keys`, `fix-core-deployment-keys` | Support `user` key (Crunchy) alongside `username` |
 | `fix-flow-secret-keys` | Same for Flow containers |
 | `fix-core-migration` | Add pg_isready init container, increase backoffLimit |
-| `fix-db-sslmode`, `fix-db-pullpolicy`, `fix-db-migrate-args` | DB migration robustness |
+| `fix-db-sslmode`, `fix-db-pullpolicy` | DB migration robustness |
 | `fix-api-wait-keycloak` | Init container waiting for Keycloak OIDC |
 | `fix-api-trust-ca` | CA bundle init container for internal TLS trust |
+
+OpenShift `securityContext` compatibility is now **values-driven**, not
+patched: setting `podSecurityContext: null` (nico-rest) /
+`containerSecurityContext: null` (Core) in `helm/values/` drops the upstream
+defaults so pods run on `restricted-v2` with a range UID — no custom SCC, no
+anyuid. This consumes upstream PR #4372 (pod securityContext configurable
+across nico-rest charts) and replaces the former `fix-*-security-context` /
+`fix-credsmgr-securitycontext` / `fix-vault-securitycontext` patches.
 
 ## Post-Deploy Steps
 

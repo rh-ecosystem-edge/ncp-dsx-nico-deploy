@@ -1,0 +1,119 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Phase 4 worker VM for the NICo + KubeVirt e2e (see e2e-nico-kubevirt-sno.md).
+#
+# A nested KubeVirt VM standing in for a bare-metal host. It is deliberately
+# BLANK — no OS containerDisk — so it netboots: NICo drives it through PXE/iPXE
+# (relay -> nico-dhcp hook allocation, proven in Phase 3) and installs RHCOS to
+# the empty disk in Phase 7. This mirrors a real server shipped with empty
+# drives.
+#
+# Boot model (design decision #4 in e2e-nico-kubevirt-sno.md): the provisioning
+# NIC is FIRST in bootOrder. A blank disk cannot boot, so the firmware always
+# falls through to PXE; once RHCOS is installed, NICo's iPXE script chains to the
+# local disk (iPXE `exit` -> firmware advances to the disk at bootOrder 2). No
+# vbmc-rs boot-override is needed — vbmc-rs accepts/echoes `Pxe` but the static
+# bootOrder here is what actually drives the netboot, and its REAL dependency
+# (Redfish power-cycle) is honored by vbmc-rs's libvirt backend.
+#
+# runStrategy: Manual — power is EXTERNALLY controlled. In Phases 5+ vbmc-rs's
+# libvirt backend starts/stops this VM via Redfish (the production shape). For a
+# standalone Phase-4 boot/DHCP check, start it with virtctl or by temporarily
+# patching runStrategy to Always (see the e2e-vms runbook / Makefile target).
+#
+# The provisioning NIC has a STABLE MAC (02:00:00:aa:cc:01): nico-dhcp's lease
+# and NICo's ExpectedMachine/host identity key on it, so it must not change
+# across VM restarts. The 02:00:00 prefix is a locally-administered unicast OUI,
+# distinct from the Phase-3 proof VMs (…:bb:0x).
+#
+# NOT here yet (later phases):
+#   * BMC: vbmc-rs runs as a sidecar/aggregator on the BMC net and controls THIS
+#     VM via libvirt — the VM itself needs no BMC NIC (Phase 5).
+#   * Machine-network NIC for the worker to reach api-int/MCS on
+#     192.168.130.0/24 and join the cluster — added in Phase 7 (bridge/macvlan
+#     onto the SNO node's machine NIC).
+#
+# Applied by `make deploy-site E2E=1` (idempotent) alongside the provisioning
+# net and relay.
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: nico-worker-0
+  namespace: nico-system
+  labels:
+    app.kubernetes.io/name: nico-worker
+    app.kubernetes.io/part-of: nico-e2e
+spec:
+  runStrategy: Manual
+  dataVolumeTemplates:
+    - metadata:
+        name: nico-worker-0-root
+      spec:
+        # Blank disk: RHCOS is PXE-installed onto it in Phase 7.
+        source:
+          blank: {}
+        storage:
+          storageClassName: lvms-vg1
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 50Gi
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nico-worker
+        app.kubernetes.io/part-of: nico-e2e
+        kubevirt.io/domain: nico-worker-0
+    spec:
+      # No default pod network: the VM lives purely on the provisioning L2 (like
+      # a bare-metal host on the fabric). It gets its address from nico-dhcp via
+      # the relay; cluster-network join connectivity is added in Phase 7.
+      domain:
+        firmware:
+          # UEFI (matches real hardware and RHCOS); secure boot off so the
+          # unsigned iPXE/PXE ROM and RHCOS live image boot under nested virt.
+          bootloader:
+            efi:
+              secureBoot: false
+        cpu:
+          cores: 4
+        memory:
+          guest: 8Gi
+        devices:
+          disks:
+            - name: rootdisk
+              bootOrder: 2
+              disk:
+                bus: virtio
+          interfaces:
+            - name: prov
+              bootOrder: 1
+              macAddress: "02:00:00:aa:cc:01"
+              model: virtio
+              bridge: {}
+            # Phase 7: machine-network NIC so the worker can reach the OCP
+            # API/MCS (192.168.130.0/24) after RHCOS install and reboot.
+            # nftables on the SNO node allows port 22623/6443 from sources
+            # on the machine network; the provisioning NIC (192.168.253.0/24)
+            # is blocked. This NIC gets a DHCP IP from the libvirt nico-e2e
+            # dnsmasq directly (via the machine-net0 bridge over enp8s0).
+            - name: machine
+              model: virtio
+              bridge: {}
+        resources:
+          requests:
+            memory: 8Gi
+      networks:
+        - name: prov
+          multus:
+            networkName: nico-system/nico-prov-vm
+        - name: machine
+          multus:
+            networkName: nico-system/nico-machine-net
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: nico-worker-0-root

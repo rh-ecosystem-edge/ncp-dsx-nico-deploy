@@ -41,8 +41,8 @@ RUN --mount=type=cache,target=/root/go/pkg/mod   \
     BUILD_TIME=$(date +"%Y-%m-%d %H:%M:%S") && \
     go build \
         -ldflags "-extldflags '-static' -w -s \
-                  -X 'github.com/NVIDIA/infra-controller-rest/api/pkg/metadata.Version=${VERSION}' \
-                  -X 'github.com/NVIDIA/infra-controller-rest/api/pkg/metadata.BuildTime=${BUILD_TIME}'" \
+                  -X 'github.com/NVIDIA/infra-controller/rest-api/api/pkg/metadata.Version=${VERSION}' \
+                  -X 'github.com/NVIDIA/infra-controller/rest-api/api/pkg/metadata.BuildTime=${BUILD_TIME}'" \
         -o /app/api \
         ./cmd/api
 

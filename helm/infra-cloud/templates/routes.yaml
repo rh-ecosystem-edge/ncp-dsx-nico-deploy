@@ -18,26 +18,3 @@ spec:
   tls:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect
----
-{{- if .Values.keycloakInstance.enabled }}
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: keycloak
-  namespace: {{ .Values.keycloakInstance.namespace }}
-  labels:
-    {{- include "nvidia-infra-controller-cloud-infra.labels" . | nindent 4 }}
-spec:
-  to:
-    kind: Service
-    name: keycloak-service
-  port:
-    targetPort: https
-  tls:
-    termination: reencrypt
-    insecureEdgeTerminationPolicy: Redirect
-    {{- $caSecret := lookup "v1" "Secret" "cert-manager" "nico-root-ca-secret" }}
-    {{- if $caSecret }}
-    destinationCACertificate: {{ index $caSecret.data "ca.crt" | b64dec | quote }}
-    {{- end }}
-{{- end }}

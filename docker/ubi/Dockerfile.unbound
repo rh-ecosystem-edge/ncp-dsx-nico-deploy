@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# NICo unbound — UBI-based recursive DNS resolver serving the upstream `.forge`
+# compatibility zone (carbide-static-pxe.forge / carbide-pxe.forge /
+# carbide-api.forge -> the nico-* MetalLB VIPs) and forwarding nico.local ->
+# nico-dns. Consumed by the vendored unbound subchart (helm/vendor/
+# infra-controller/helm/charts/unbound) via unbound.image in
+# helm/values/nico-core-site.yaml. See CLAUDE.md "Networking / MetalLB" and the
+# unbound: block in nico-core-site.yaml for the deployment topology.
+#
+# Build context: docker/ubi (this directory). unbound is in the UBI appstream
+# repo, so no RHEL entitlement / subscription-manager step is needed.
+
+FROM registry.access.redhat.com/ubi10/ubi-minimal:latest
+
+RUN microdnf install -y unbound && \
+    microdnf clean all
+
+LABEL name="nico-unbound" \
+      summary="NICo .forge compatibility DNS resolver (unbound on UBI 10)" \
+      description="Recursive DNS resolver serving the upstream .forge zone mapped to nico-* MetalLB VIPs and forwarding nico.local to nico-dns" \
+      io.k8s.display-name="NICo unbound" \
+      io.k8s.description="NICo .forge compatibility DNS resolver" \
+      com.redhat.component="nico-unbound"
+
+# Base config; per-site fragments are mounted at /etc/unbound/local.conf.d by the
+# unbound subchart and included from here.
+COPY unbound.conf /etc/unbound/unbound.conf
+
+# Runs as a plain arbitrary OpenShift UID (restricted-v2): binds an unprivileged
+# port (5353, see unbound.conf), writes nothing, no capabilities.
+USER 1001
+
+EXPOSE 5353/udp 5353/tcp
+
+ENTRYPOINT ["/usr/sbin/unbound", "-d", "-c", "/etc/unbound/unbound.conf"]

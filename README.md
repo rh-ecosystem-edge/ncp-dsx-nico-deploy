@@ -13,6 +13,9 @@ External Secrets Operator, and OpenShift Routes.
 | **[dataplane-vip.md](dataplane-vip.md)** | Complete guide for MetalLB data-plane VIPs: prerequisites, configuration, verification, troubleshooting |
 | **[metallb-loadbalancer-setup.md](metallb-loadbalancer-setup.md)** | Design rationale: why MetalLB, L2 vs BGP, OVN local-gateway requirement, DHCP relay |
 | **[minimal-setup-requirements.md](minimal-setup-requirements.md)** | Storage provisioning for bare clusters (LVM Storage, ODF) |
+| **[docs/e2e-libvirt-openshift.md](docs/e2e-libvirt-openshift.md)** | End-to-end runbook: libvirt-based test environment (SNO + libvirt VMs + vbmc-rs) |
+| **[docs/rhel10-scout.md](docs/rhel10-scout.md)** | RHEL 10 Scout and qcow-imager: all-RHEL mkosi build, lessons learned |
+| **[docs/nvl72-flat-networking.md](docs/nvl72-flat-networking.md)** | FLAT networking guide for GB300 NVL72 (MetalLB on shared subnet) |
 
 **Quick start:** Go to [Data-plane VIPs (MetalLB)](#data-plane-vips-metallb) below.
 
@@ -414,7 +417,7 @@ UBI 10-based images built by Konflux. Dockerfiles in `docker/ubi/`.
 
 ```bash
 make docker-build-ubi    # REST images
-make docker-build-core   # Core + admin-cli images
+make docker-build-core   # Core image (bundles nico-admin-cli binary)
 ```
 
 ## CLI Tools
@@ -439,20 +442,72 @@ security context overrides (`runAsNonRoot`, `drop: ALL`, etc.) for the
 restricted PodSecurity policy.
 
 **nico-admin-cli** — Core gRPC client (bare metal management, host discovery).
-Only relevant after deploying the site profile. It's bundled in the
-`nico-api` pod, which has its own client certs mounted at
-`/run/secrets/spiffe.io/` — the CLI's *default* target is
-`carbide-api.forge-system`, a dev-environment address that doesn't exist
-here, so the `--api-url`/cert flags below are not optional:
+Only relevant after deploying the site profile. Admins run it from a
+**workstation** over mTLS (there is no in-cluster admin pod and no `oc exec`
+into `nico-api`). A dedicated container image (`docker/ubi/Dockerfile.nico-admin-cli`)
+plus the `hack/nico-admin-cli` wrapper avoid long `podman run` lines.
+
+Admin authentication uses a **standalone admin-client CA** whose private key is
+generated and kept **off-cluster** (by the site operator / security team) — it
+never lives in the cluster or this repo. Only the CA's *public* cert is given to
+Core, injected at install time into its dedicated admin client-cert trust store
+(`admin_root_cafile_path`, distinct from the SPIFFE service-mesh root):
 
 ```bash
-oc exec -n nico-system deploy/nico-api -- /opt/nico/nico-admin-cli \
-  --api-url https://nico-api.nico-system.svc.cluster.local:1079 \
-  --client-cert-path /run/secrets/spiffe.io/tls.crt \
-  --client-key-path /run/secrets/spiffe.io/tls.key \
-  --forge-root-ca-path /run/secrets/spiffe.io/ca.crt \
-  machine-interfaces show
+# 1. One-time: generate the admin CA off-cluster (PrintableString CN so Core's
+#    issuer-CN check matches; the CN must equal auth.additionalIssuerCns).
+cat > /tmp/admin-ca.cnf <<'EOF'
+[req]
+distinguished_name = dn
+string_mask = nombstr
+prompt = no
+[dn]
+CN = nico-admin-ca
+[v3_ca]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+EOF
+openssl ecparam -name prime256v1 -genkey -noout -out nico-admin-ca.key
+openssl req -x509 -new -key nico-admin-ca.key -sha256 -days 3650 \
+  -config /tmp/admin-ca.cnf -extensions v3_ca -out nico-admin-ca.crt
+
+# 2. Deploy Core with the site overlay, injecting the CA PUBLIC cert from file:
+#    (helm/values/nico-core-site.yaml sets auth.additionalIssuerCns=[nico-admin-ca]
+#    and leaves adminRootCertPem empty for exactly this --set-file injection.)
+helm upgrade --install nico-core <chart> -n nico-system \
+  -f helm/values/nico-core.yaml -f helm/values/nico-core-site.yaml \
+  --set-file nico-api.siteConfig.adminRootCertPem=nico-admin-ca.crt
 ```
+
+Expose the Core gRPC API with the passthrough Route (`infra-site`
+`adminApiRoute.enabled=true`; `termination: passthrough` so the client cert
+reaches `nico-api` end-to-end). Its host must be a `nico-api` serving-cert SAN
+(the CLI has no server-name override), so add the Route host to
+`nico-api.certificate.extraDnsNames` (see `nico-core-site.yaml`).
+
+Issue each admin a client leaf from the CA (no SPIFFE SAN, `clientAuth` EKU),
+then run the CLI from the workstation. Populate `~/.config/nico` with
+`nico-admin-cli.crt`, `nico-admin-cli.key`, and `nico-root-ca.crt` (the CA that
+signed the `nico-api` server cert, from `nico-root-ca-secret`), point `API_URL`
+at the Route, and:
+
+```bash
+ROUTE=$(oc get route nico-api-grpc -n nico-system -o jsonpath='{.spec.host}')
+# If the apps domain resolves on your workstation, this is all you need:
+API_URL="https://$ROUTE:443" hack/nico-admin-cli expected-machine show
+# On an SNO / lab where *.apps isn't in workstation DNS, map the host to the
+# ingress IP (the CLI still verifies the server-name against the cert SAN):
+NICO_ADMIN_CLI_ADD_HOST="$ROUTE:$(oc get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')" \
+API_URL="https://$ROUTE:443" hack/nico-admin-cli expected-machine show
+```
+
+The leaf is classified by Core as an **ExternalUser** (non-SPIFFE cert whose
+issuer CN is in `nico-api.auth.additionalIssuerCns`) and mapped to the
+`ForgeAdminCLI` admin principal, so admin-scoped methods work. A *service*
+SPIFFE cert (`/run/secrets/spiffe.io/`) is rejected (403) by Core's internal
+RBAC for admin methods unless `bypass_rbac` is set (machine-a-tron only). The
+CLI's default target (`carbide-api.forge-system`) is a dev-environment address
+that does not exist here, hence the explicit `API_URL`.
 
 `machine-interfaces show` is a good sanity check that Core is up and
 reachable at any stage — it returns an empty table (rather than an error)

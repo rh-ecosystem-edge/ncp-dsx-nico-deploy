@@ -1,0 +1,71 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Posture 3 (e2e) minimal Scout oss postinst.
+#
+# Identical to the upstream scout-oss `mkosi.postinst.chroot` with the NVIDIA
+# GPU driver/DCGM/fabricmanager stack and all of its presence/version gates
+# REMOVED. The SNO e2e worker is a GPU-less KubeVirt VM: forge-scout's
+# hardware enumeration matches PCI vendor 0x10de and, finding none, reports
+# gpus=[] and never invokes the CUDA/DCGM tooling. Dropping the stack also
+# removes the build-time dependency on NVIDIA's CUDA apt repo.
+#
+# Everything NOT related to the GPU stack is kept verbatim from upstream:
+# the image-version stamp, the lldpd enable, the forge-scout install, the daily
+# update-check timer, and the module-loader copies. See scout-discovery-os.md
+# (Posture 3).
+#
+# This file is copied over pxe/mkosi.profiles/scout-oss-{x86_64,aarch64}/
+# mkosi.postinst.chroot by apply-overlay.sh in a throwaway worktree; the
+# vendored submodule is never modified.
+
+if [ "$1" != "final" ]; then
+  exit 0
+fi
+
+set -Eeux
+
+echo "$PKG_VERSION" >/etc/scout-image-version
+
+# lldpd must be running for forge-scout to collect LLDP neighbors via lldpcli.
+# Enable it explicitly rather than relying on the package postinst.
+echo 'DAEMON_ARGS="-M 1"' >/etc/default/lldpd
+systemctl enable lldpd
+
+# ============================================================================
+# FORGE-SCOUT
+# ============================================================================
+dpkg -i /build-output/forge-scout.deb
+systemctl enable forge-scout
+
+# ============================================================================
+# DAILY UPDATE CHECK
+# ============================================================================
+cp /build-output/check-scout-updates.sh /opt/forge/
+cp /build-output/check-scout-updates.service /etc/systemd/system
+cp /build-output/check-scout-updates.timer /etc/systemd/system
+
+ln -s /etc/systemd/system/check-scout-updates.service /etc/systemd/system/multi-user.target.wants/check-scout-updates.service
+ln -s /etc/systemd/system/check-scout-updates.timer /etc/systemd/system/timers.target.wants/check-scout-updates.timer
+
+# ============================================================================
+# MODULE LOADER
+# ============================================================================
+cp /build-output/load_modules.sh /opt/forge/
+cp /build-output/forge-scout-network.sh /opt/forge/
+
+# ============================================================================
+# SANITY: forge-scout present and fully linkable (GPU tooling gates dropped)
+# ============================================================================
+if [ ! -e /opt/forge/forge-scout ]
+then
+  echo "ERROR: /opt/forge/forge-scout missing"
+  exit 1
+fi
+
+if [ "$(ldd /opt/forge/forge-scout | fgrep -c 'not found')" != "0" ]
+then
+  echo "ERROR: forge-scout has missing libraries, it may not run"
+  exit 1
+fi

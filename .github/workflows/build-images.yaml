@@ -6,7 +6,7 @@ on:
   pull_request:
     paths:
       - 'docker/ubi/**'
-      - 'helm/vendor/infra-controller/**'
+      - 'helm/vendor/infra-controller'
       - '.github/workflows/build-images.yaml'
   push:
     tags: ['v*']
@@ -14,7 +14,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}
+  IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+  PUSH: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
 jobs:
   rest-images:
@@ -42,7 +43,7 @@ jobs:
           submodules: true
 
       - name: Log in to ghcr.io
-        if: github.event_name != 'pull_request'
+        if: env.PUSH == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -66,21 +67,27 @@ jobs:
             type=raw,value=${{ github.sha }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
+      - name: Generate VERSION file
+        run: |
+          cd helm/vendor/infra-controller/rest-api
+          git describe --tags HEAD 2>/dev/null | sed 's/^v//' > VERSION
+          [ -s VERSION ] || echo "dev" > VERSION
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: helm/vendor/infra-controller/rest-api
           file: docker/ubi/Dockerfile.${{ matrix.image }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ env.PUSH }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
   core-images:
-    runs-on: ubuntu-latest
     # RHSM secrets aren't exposed to pull_request runs triggered from forks;
-    # skip the build there instead of failing on missing entitlement secrets.
+    # skip the build for those to avoid confusing failures.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -90,9 +97,6 @@ jobs:
         image:
           - name: nico-core
             dockerfile: docker/ubi/Dockerfile.nico-core
-            context: helm/vendor/infra-controller
-          - name: nico-admin-cli
-            dockerfile: docker/ubi/Dockerfile.nico-admin-cli
             context: helm/vendor/infra-controller
           - name: nico-nsm
             dockerfile: docker/ubi/Dockerfile.nico-nsm
@@ -104,27 +108,21 @@ jobs:
           submodules: true
 
       - name: Log in to ghcr.io
-        if: github.event_name != 'pull_request'
+        if: env.PUSH == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to registry.redhat.io
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: registry.redhat.io
-          username: ${{ secrets.REDHAT_REGISTRY_USER }}
-          password: ${{ secrets.REDHAT_REGISTRY_PASSWORD }}
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # TEMP: REDHAT_ORG_ID / REDHAT_ACTIVATION_KEY are Shai Kapon's personal
-      # RH activation key, used as a stopgap until Konflux (or a team-owned
-      # RHSM key) is wired in. Swap before this repo has multiple maintainers.
+      - name: Generate VERSION file
+        run: |
+          cd helm/vendor/infra-controller/rest-api
+          git describe --tags HEAD 2>/dev/null | sed 's/^v//' | grep -v '^$' > VERSION || echo "dev" > VERSION; [ -s VERSION ] || echo "dev" > VERSION
+
       - name: Prepare RHSM secrets
         run: |
           echo "${{ secrets.REDHAT_ORG_ID }}" > /tmp/rhsm_org
@@ -149,7 +147,7 @@ jobs:
         with:
           context: ${{ matrix.image.context }}
           file: ${{ matrix.image.dockerfile }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ env.PUSH }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           secret-files: |

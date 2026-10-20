@@ -155,14 +155,18 @@ DATAPLANE_NODE_IP=10.6.145.2    # static IP for the node NIC
 ```
 
 **IP configuration is in `deploy.env` only** — the example overlay has empty
-placeholders. When `DATAPLANE_VIP` is set, the make targets automatically enable
-MetalLB and NMState operators. (No separate prereqs or infra-site override files needed.)
+placeholders. Choose the MetalLB provider before deploying:
 
-When this cluster is managed by DPF/HCP, set `METALLB_MODE=dpf` in
-`deploy.env`. NICo then waits for the DPF-provided MetalLB CRDs, uses
-`openshift-operators` for its pool and advertisement, and does not install a
-second operator or create a second cluster-wide `MetalLB` resource. Leave the
-mode at `standalone` for a NICo-only cluster.
+- **NICo-only cluster (default):** leave `METALLB_MODE` unset, or set
+  `METALLB_MODE=standalone`. NICo installs MetalLB in `metallb-system`.
+- **DPF/HCP cluster:** set `METALLB_MODE=dpf`. DPF must already have installed
+  MetalLB and created its `MetalLB` resource in `openshift-operators`.
+  NICo waits for those CRDs, then creates only its own pool and advertisement;
+  it does not install another operator or singleton resource.
+
+When `DATAPLANE_VIP` is set, the make targets enable the selected MetalLB path
+and NMState. Do not use `METALLB_MODE=dpf` unless the DPF MetalLB CRD is already
+available; otherwise the prerequisite wait will time out.
 
 ## Deploy
 

@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# BMC network (oob, 192.168.2.0/24). Secondary Layer2 with OVN IPAM enabled:
+# vbmc-rs aggregator and nico-bmc-proxy get stable IPs here; no external DHCP
+# needed on the BMC net. Persistent lifecycle so vbmc-rs keeps its IP.
+apiVersion: k8s.ovn.org/v1
+kind: ClusterUserDefinedNetwork
+metadata:
+  name: nico-bmc
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: nico-system
+  network:
+    topology: Layer2
+    layer2:
+      role: Secondary
+      subnets: ["192.168.2.0/24"]
+      ipam:
+        mode: Enabled
+        lifecycle: Persistent

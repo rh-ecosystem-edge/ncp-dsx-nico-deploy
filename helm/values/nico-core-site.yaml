@@ -19,9 +19,77 @@
 # real site's addressing before onboarding actual machines.
 # =============================================================================
 
+# =============================================================================
+# MetalLB LoadBalancer VIPs for the site-facing Core services.
+#
+# The production network model fronts these services with MetalLB VIPs
+# (see CLAUDE.md "Networking / MetalLB" and project OOB network model). Each
+# externalService.enabled=true renders a `<svc>-external` LoadBalancer Service;
+# the VIP is PINNED via metallb.universe.tf/loadBalancerIPs and MUST fall inside
+# an infra-site IPAddressPool range (helm/infra-site values.metallb.addressPools,
+# default 192.0.2.0/24).
+#
+# The addresses below are RFC 5737 TEST-NET-1 PLACEHOLDERS — replace with the
+# real site VIPs (and keep them inside the pool) before onboarding hardware.
+# =============================================================================
 nico-api:
+  externalService:
+    enabled: true
+    annotations:
+      metallb.universe.tf/loadBalancerIPs: "192.0.2.10"
+  certificate:
+    # Extra SAN(s) on the nico-api serving cert. Required when exposing the Core
+    # gRPC API through the passthrough Route (infra-site adminApiRoute): the CLI
+    # verifies the server against the URL host (no server-name override), so the
+    # Route host must be a SAN here. Replace with your Route host, e.g.
+    # nico-api-grpc-nico-system.apps.<cluster-domain>.
+    extraDnsNames:
+      - nico-api-grpc-nico-system.apps.example.com
+      # Upstream compile-time default gRPC endpoint. crates/pxe/src/config.rs:52
+      # defaults client_facing_api_url (the server_uri handed to Scout for its
+      # DiscoverMachine mTLS call) to https://carbide-api.forge, and the name is
+      # baked into field agent binaries. Upstream's nico-api chart ships this as a
+      # default SAN "for backwards compatibility" (charts/nico-api/tests/
+      # certificate_test.yaml:34); our extraDnsNames override REPLACES that default
+      # list (Helm does not merge lists), so we must re-add it. Scout verifies the
+      # serving cert against the URL host with no server-name override, and the
+      # worker resolves carbide-api.forge -> the nico-api VIP (192.0.2.10) via the
+      # unbound .forge zone below, so this SAN is what makes the discovery callback
+      # trust the endpoint.
+      - carbide-api.forge
+  auth:
+    # Issuer DN CN of the dedicated admin-client CA below. A non-SPIFFE client
+    # leaf whose issuer CN matches this is classified by Core as an ExternalUser,
+    # which the internal RBAC maps to the ForgeAdminCLI admin principal — the
+    # identity nico-admin-cli needs for admin-scoped methods (expected-machine,
+    # credential, boot-override, ...). MUST be a dedicated admin-only CA CN,
+    # never a shared/root CA CN: every non-SPIFFE leaf issued under a CN listed
+    # here becomes an admin. Must match the CN in adminRootCertPem below and be
+    # encoded as an ASN.1 PrintableString (openssl string_mask = nombstr).
+    additionalIssuerCns:
+      - nico-admin-ca
   siteConfig:
     enabled: true
+    # Public certificate of the standalone admin-client CA that signs
+    # nico-admin-cli's client leaf. Fed to Core's dedicated admin client-cert
+    # trust store (admin_root_cafile_path, default
+    # /etc/forge/carbide-api/site/admin_root_cert_pem) — SEPARATE from the
+    # SPIFFE service-mesh root (root_cafile_path). Public cert only; the CA
+    # PRIVATE KEY is generated and kept OFF-CLUSTER by the site operator /
+    # security team and never lives in the cluster (nor in this repo).
+    #
+    # Left EMPTY on purpose: inject the per-site CA public cert at install time
+    # from a file, so no certificate is committed. Its CN must match
+    # auth.additionalIssuerCns above (nico-admin-ca) and be PrintableString-
+    # encoded (openssl string_mask = nombstr). Example:
+    #
+    #   helm upgrade --install nico-core <chart> \
+    #     -f helm/values/nico-core.yaml -f helm/values/nico-core-site.yaml \
+    #     --set-file nico-api.siteConfig.adminRootCertPem=/path/to/nico-admin-ca.crt
+    #
+    # (To use a different CA CN, also override auth.additionalIssuerCns to match.)
+    # See README (nico-admin-cli) for generating the CA and client leaves.
+    adminRootCertPem: ""
     nicoApiSiteConfig: |
       initial_domain_name = "nico.local"
 
@@ -81,3 +149,130 @@ nico-api:
       [pools.fnn-asn]
       type = "integer"
       ranges = [{ start = "4200000000", end = "4200000254" }]
+
+# -----------------------------------------------------------------------------
+# Site-facing Core service VIPs (see the MetalLB header at the top of this file).
+# VIPs are RFC 5737 placeholders inside the infra-site 192.0.2.0/24 pool.
+# -----------------------------------------------------------------------------
+nico-dhcp:
+  externalService:
+    enabled: true
+    annotations:
+      metallb.universe.tf/loadBalancerIPs: "192.0.2.11"
+  config:
+    kea:
+      hookParameters:
+        # DNS advertised to machines (DHCP option 6). This MUST be the unbound
+        # layered resolver VIP (192.0.2.15, see the `unbound:` block below), NOT
+        # nico-dns directly. Managed machines and a booting Scout resolve upstream
+        # `.forge` compile-time names (carbide-static-pxe.forge, carbide-pxe.forge,
+        # carbide-api.forge — hardcoded in agent binaries and baked into scout.efi;
+        # see crates/pxe/src/config.rs and pxe/common_files/scout-loader-rclocal).
+        # nico-dns only serves nico.local, so pointing machines straight at it
+        # leaves every `.forge` lookup unresolved and discovery stalls in
+        # WAITINGFORDISCOVERY. unbound answers `.forge` authoritatively (localData),
+        # forwards nico.local -> nico-dns, and recurses/forwards everything else —
+        # the layered architecture upstream's helm-prereqs mandates. Reachable from
+        # the provisioning segment via the fabric (MetalLB VIP), NOT a ClusterIP.
+        nameservers: "192.0.2.15"
+        # nico-ntp is disabled; reuse the nico-dns VIP — it only needs to parse
+        # as valid IPv4, nothing depends on a real NTP server.
+        ntpServer: "192.0.2.12"
+        # UEFI HTTPClient boot URL host handed to worker machines. Production:
+        # the nico-pxe VIP (192.0.2.13 below), reachable on the provisioning
+        # segment. crates/dhcp/src/machine.rs builds
+        # http://{provisioningServer}:8080/public/blobs/internal/<arch>/ipxe.efi.
+        provisioningServer: "192.0.2.13"
+
+nico-dns:
+  # nico-dns is a StatefulSet: its chart emits a paired UDP+TCP LoadBalancer per
+  # pod ordinal (sharing one VIP via allow-shared-ip) and pins the VIP through
+  # perPodAnnotations[ordinal], NOT a flat annotations map. One entry per replica.
+  externalService:
+    enabled: true
+    perPodAnnotations:
+      - metallb.universe.tf/loadBalancerIPs: "192.0.2.12"
+
+nico-pxe:
+  externalService:
+    enabled: true
+    annotations:
+      metallb.universe.tf/loadBalancerIPs: "192.0.2.13"
+
+nico-ssh-console-rs:
+  externalService:
+    enabled: true
+    annotations:
+      metallb.universe.tf/loadBalancerIPs: "192.0.2.14"
+
+# -----------------------------------------------------------------------------
+# unbound — the `.forge` compatibility DNS zone + layered resolver.
+#
+# REQUIRED for real machine/DPU bring-up (not just e2e). Upstream keeps a handful
+# of hostnames hardcoded in agent binaries and baked into boot images that no
+# Helm value can reach:
+#   * carbide-api.forge         (crates/pxe/src/config.rs:52 — server_uri for the
+#                                Scout DiscoverMachine mTLS callback)
+#   * carbide-pxe.forge         (crates/pxe/src/config.rs:40 — iPXE base-url +
+#                                cloud-init endpoints)
+#   * carbide-static-pxe.forge  (pxe/common_files/scout-loader-rclocal:48 — the
+#                                scout.squashfs rootfs URL, baked INTO scout.efi;
+#                                the discovery cmdline carries no newrootfs= to
+#                                override it, so this name is unavoidable)
+# Upstream's design (helm-prereqs/README.md "DPU compatibility DNS") is that the
+# DEPLOYMENT resolves these via a `.forge` zone mapped to the nico-* MetalLB VIPs,
+# served by this unbound subchart, which machines use as their DHCP-advertised
+# resolver (nico-dhcp option 6 -> the VIP below). unbound answers `.forge` from
+# localData, forwards nico.local -> nico-dns, and forwards everything else
+# upstream. Without it, scout.efi downloads (its fetch reads a values-set env URL)
+# but the loader's hardcoded carbide-static-pxe.forge squashfs fetch and the
+# DiscoverMachine callback both fail name resolution and the machine stalls in
+# WAITINGFORDISCOVERY.
+#
+# Ports: nico-pxe's externalService already exposes both :8080 and :80 (->8080)
+# on VIP 192.0.2.13 (nico-pxe-external / nico-pxe-external-80), so the portless
+# upstream defaults http://carbide-pxe.forge and the loader's
+# http://carbide-static-pxe.forge (both :80) reach the blob server as-is.
+unbound:
+  enabled: true
+  # UBI 10 unbound image built from docker/ubi/Dockerfile.unbound (see the image
+  # table in CLAUDE.md). Local-testing default; overridden per registry via
+  # DEPLOY_IMAGE_REPO on `make deploy-site` like the other nico-* images.
+  image:
+    repository: quay.io/fdupont-redhat/nico-unbound
+    tag: latest
+    pullPolicy: Always
+  # Disable the unbound_exporter metrics sidecar: its default image lives in a
+  # private registry and it needs unbound remote-control keys our stock image
+  # does not set up (chart guidance for a public/non-nvforge unbound image).
+  exporter:
+    enabled: false
+  externalService:
+    enabled: true
+    annotations:
+      # RFC 5737 placeholder inside the infra-site 192.0.2.0/24 pool, next free
+      # after nico-ssh-console (.14). MUST fall inside a MetalLB addressPool range.
+      metallb.universe.tf/loadBalancerIPs: "192.0.2.15"
+  # `.forge` legacy aliases -> the site-facing Core VIPs. A records only (the
+  # upstream names are single-host). These IPs are the same RFC 5737 placeholders
+  # pinned on the nico-pxe / nico-api externalServices above — keep them in sync.
+  localData:
+    - name: carbide-static-pxe.forge
+      addresses: ["192.0.2.13"]   # nico-pxe VIP (scout.squashfs / scout.efi blobs)
+    - name: carbide-pxe.forge
+      addresses: ["192.0.2.13"]   # nico-pxe VIP (iPXE base-url + cloud-init)
+    - name: carbide-api.forge
+      addresses: ["192.0.2.10"]   # nico-api VIP (Core gRPC / DiscoverMachine)
+  # Forwarders (chart default is a deliberately-broken "patchme" include, so the
+  # deployment MUST supply this). Layered resolution: nico.local -> nico-dns VIP;
+  # everything else -> the site upstream resolver. Replace the `.` forward-addr
+  # with the real site/ToR upstream DNS per deployment — 8.8.8.8 is a working
+  # default so external names resolve out of the box, NOT a production endpoint.
+  localConfig:
+    forwarders.conf: |
+      forward-zone:
+          name: "nico.local."
+          forward-addr: 192.0.2.12
+      forward-zone:
+          name: "."
+          forward-addr: 8.8.8.8

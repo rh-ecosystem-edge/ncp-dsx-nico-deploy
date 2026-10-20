@@ -224,6 +224,54 @@ flow:
   enabled: true
 
 # =============================================================================
+# MetalLB — address pools, advertisements and BGP peers for the site-facing
+# Core service VIPs. The operator + singleton MetalLB instance are installed by
+# the prereqs chart (nvidia-infra-controller-prereqs, values.metallb); this
+# block is the site NETWORK config and is applied after the operator is ready.
+#
+# The VIPs themselves are pinned per-Service via the
+# `metallb.universe.tf/loadBalancerIPs` annotation in
+# helm/values/nico-core-site.yaml (externalService.annotations); every pinned
+# VIP MUST fall inside one of the addressPools ranges below.
+#
+# addresses use RFC 5737 TEST-NET-1 (192.0.2.0/24) as documentation-safe
+# PLACEHOLDERS — replace with the real site's VIP range before onboarding.
+#
+# mode:
+#   bgp — advertise each VIP /32 to the ToR/fabric over BGP (production
+#         reference: MetalLB speaks to the FRR ToR; the node's default gateway
+#         must BE that fabric so OVN returns service traffic symmetrically —
+#         see CLAUDE.md "Networking / MetalLB").
+#   l2  — gratuitous-ARP a VIP from one node (single-subnet / lab fallback).
+# =============================================================================
+metallb:
+  enabled: true
+  namespace: metallb-system
+  mode: bgp
+  addressPools:
+    - name: nico-site-vips
+      addresses:
+        - 192.0.2.0/24
+      autoAssign: false
+  # Used when mode=l2. Empty interfaces => advertise on all.
+  l2:
+    interfaces: []
+  # Used when mode=bgp. Peer with the ToR/leaf fabric. ASNs/addresses are
+  # PLACEHOLDERS — set to the real site's fabric values.
+  bgp:
+    localASN: 64513
+    peers:
+      - name: tor
+        peerASN: 64512
+        peerAddress: 192.168.130.5
+        peerPort: 179
+    advertisement:
+      # /32 so each VIP is advertised as a host route.
+      aggregationLength: 32
+      communities: []
+      localPref: 0
+
+# =============================================================================
 # Crunchy PostgreSQL cluster for NICo site
 # =============================================================================
 postgresql:
@@ -242,24 +290,6 @@ nico-rest-common:
     create: true
     temporalEncryptionKey:
       value: ""
-
-# MetalLB operand (CR + IPAddressPool + L2Advertisement) for the dataplane VIPs.
-# Neutral by default — supply addresses/interfaces per-site via SITE_INFRA_VALUES
-# (see helm/values/infra-site-example.yaml for a dedicated provisioning NIC, or
-# helm/values/infra-site-flat-example.yaml for a FLAT network).
-#
-# interfaces is optional:
-#   - []            : FLAT network — advertise the pool on all node interfaces
-#                     (VIPs live on the primary/cluster network). Keep
-#                     nodeNetwork.enabled=false.
-#   - [<nic>]       : pin the L2 advertisement to a dedicated provisioning NIC
-#                     (pair with nodeNetwork below for its static IP).
-metallb:
-  enabled: false
-  namespace: metallb-system
-  poolName: nico-dataplane-vip
-  addresses: []
-  interfaces: []
 
 # Static IP on the dataplane NIC (NodeNetworkConfigurationPolicy via
 # kubernetes-nmstate) so MetalLB can ARP the VIP on that VLAN. Neutral by

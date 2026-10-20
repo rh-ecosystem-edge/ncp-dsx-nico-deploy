@@ -25,3 +25,4 @@ deploy.env
 # Per-site Core overlay config — user-local, never commit
 helm/values/nico-core-*.yaml
 !helm/values/nico-core-example.yaml
+.claude/worktrees/

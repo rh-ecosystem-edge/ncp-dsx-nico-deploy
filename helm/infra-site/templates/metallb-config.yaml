@@ -2,11 +2,12 @@
 SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 
-MetalLB operand: controller/speaker (MetalLB CR), the dataplane VIP pool, and
-an L2 advertisement. The operator and CRDs are installed by the prereqs chart;
-the wait-operators job gates on the CRDs so these apply cleanly.
+MetalLB site network config: address pools + advertisements (+ BGP peers).
+The operator and the singleton MetalLB instance are installed by the prereqs
+chart; these operands land in the metallb-system namespace and are validated by
+the MetalLB controller webhook (up by the time this chart is deployed).
 
-interfaces is optional:
+metallb.l2.interfaces is optional:
   - Secondary/dedicated provisioning NIC: list it to pin the L2 advertisement
     to that interface (pair with nodeNetwork for its static IP).
   - FLAT network (VIPs on the primary/cluster network): leave it empty and
@@ -14,34 +15,74 @@ interfaces is optional:
 */}}
 
 {{- if .Values.metallb.enabled }}
-{{- if not .Values.metallb.addresses }}{{- fail "metallb.enabled=true requires metallb.addresses (set it in your infra-site-<site>.yaml override)" }}{{- end }}
-apiVersion: metallb.io/v1beta1
-kind: MetalLB
-metadata:
-  name: metallb
-  namespace: {{ .Values.metallb.namespace }}
----
+{{- range .Values.metallb.addressPools }}
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:
-  name: {{ .Values.metallb.poolName }}
-  namespace: {{ .Values.metallb.namespace }}
+  name: {{ .name }}
+  namespace: {{ $.Values.metallb.namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" $ | nindent 4 }}
 spec:
   addresses:
-    {{- toYaml .Values.metallb.addresses | nindent 4 }}
-  autoAssign: false
-  avoidBuggyIPs: true
+    {{- toYaml .addresses | nindent 4 }}
+  autoAssign: {{ .autoAssign | default false }}
 ---
+{{- end }}
+{{- if eq .Values.metallb.mode "l2" }}
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
 metadata:
-  name: {{ .Values.metallb.poolName }}
+  name: nico-site-l2
   namespace: {{ .Values.metallb.namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
 spec:
   ipAddressPools:
-    - {{ .Values.metallb.poolName }}
-  {{- with .Values.metallb.interfaces }}
+    {{- range .Values.metallb.addressPools }}
+    - {{ .name }}
+    {{- end }}
+  {{- with .Values.metallb.l2.interfaces }}
   interfaces:
     {{- toYaml . | nindent 4 }}
   {{- end }}
+{{- else if eq .Values.metallb.mode "bgp" }}
+{{- range .Values.metallb.bgp.peers }}
+apiVersion: metallb.io/v1beta2
+kind: BGPPeer
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.metallb.namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" $ | nindent 4 }}
+spec:
+  myASN: {{ $.Values.metallb.bgp.localASN }}
+  peerASN: {{ .peerASN }}
+  peerAddress: {{ .peerAddress }}
+  peerPort: {{ .peerPort | default 179 }}
+---
+{{- end }}
+apiVersion: metallb.io/v1beta1
+kind: BGPAdvertisement
+metadata:
+  name: nico-site-bgp
+  namespace: {{ .Values.metallb.namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+spec:
+  ipAddressPools:
+    {{- range .Values.metallb.addressPools }}
+    - {{ .name }}
+    {{- end }}
+  {{- with .Values.metallb.bgp.advertisement.aggregationLength }}
+  aggregationLength: {{ . }}
+  {{- end }}
+  {{- with .Values.metallb.bgp.advertisement.communities }}
+  communities:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if .Values.metallb.bgp.advertisement.localPref }}
+  localPref: {{ .Values.metallb.bgp.advertisement.localPref }}
+  {{- end }}
+{{- end }}
 {{- end }}

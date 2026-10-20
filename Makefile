@@ -1,14 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: check-prereqs bootstrap-cluster bootstrap-clean patch-vendor
-.PHONY: docker-build-ubi docker-push-ubi docker-build-core docker-push-core docker-build-nicocli docker-push-nicocli helm-dep-build helm-lint helm-template
+.PHONY: check-prereqs
+.PHONY: docker-build docker-push docker-build-ubi docker-push-ubi docker-build-core docker-push-core docker-build-nicocli docker-push-nicocli docker-build-unbound docker-push-unbound helm-dep-build helm-lint helm-template
 .PHONY: build-machine-a-tron bootstrap-machine-a-tron machine-a-tron-status
-.PHONY: deploy-all-sites new-site
 .PHONY: deploy-prereqs deploy-cloud-infra deploy-cloud
-.PHONY: deploy-site-infra vault-init vault-admin-cert ensure-ssh-host-key deploy-site deploy-site-agent
+.PHONY: deploy-site-infra vault-init ensure-ssh-host-key deploy-site deploy-site-agent deploy-e2e-net
 .PHONY: deploy-all-cloud patch-keycloak-route bootstrap-org deploy-all-site status undeploy
-.PHONY: deploy-dataplane-vip verify-prereqs-deployed verify-infra-deployed verify-core-deployed verify-dataplane-vip
 .PHONY: reset-dpu-endpoint
 
 # Upstream source repo (git submodule, read-only)
@@ -20,10 +18,34 @@ NICO_CORE_CHART := $(UPSTREAM)/helm
 NICO_SITE_AGENT_CHART := $(UPSTREAM)/helm/rest/nico-rest-site-agent
 NICO_TEMPORAL_CHART := $(UPSTREAM)/rest-api/temporal-helm/temporal
 
+# RMS (rack-manager) upstream chart, vendored as a submodule.
+# Requires `git submodule update --init helm/vendor/nv-rms` before use.
+# Override RMS_UPSTREAM if the submodule is at a different path.
+RMS_UPSTREAM ?= helm/vendor/nv-rms
+RMS_CHART := $(RMS_UPSTREAM)/helm
+
 # Image configuration
 IMAGE_REGISTRY ?= ghcr.io/rh-ecosystem-edge
 IMAGE_TAG ?= latest
 DOCKERFILE_DIR := docker/ubi
+
+# Deploy-time image repository override (local testing). Empty by default so
+# `make deploy-*` uses each chart's values default (ghcr.io release images).
+# Set to a dev registry to pull locally-built/pushed images instead, e.g.
+# `make deploy-cloud DEPLOY_IMAGE_REPO=$(IMAGE_REGISTRY)`. When set, pullPolicy
+# is forced to Always so re-pushed :latest tags are picked up.
+DEPLOY_IMAGE_REPO ?=
+CLOUD_IMAGE_OVERRIDE := $(if $(DEPLOY_IMAGE_REPO),--set global.image.repository=$(DEPLOY_IMAGE_REPO) --set global.image.pullPolicy=Always,)
+# Site profile can't reuse CLOUD_IMAGE_OVERRIDE: the cloud nico-rest chart treats
+# global.image.repository as a BASE and appends /<service>, but the Core umbrella
+# treats it as a FULL path ending in /nico-core (all Core services share one
+# image), and nico-flow carries its own full-path images.flow.repository. So map
+# DEPLOY_IMAGE_REPO to both explicit per-image paths (<repo>/nico-core, <repo>/
+# nico-flow). PSM/NSM were unbundled from the Flow chart upstream — not deployed.
+SITE_IMAGE_OVERRIDE := $(if $(DEPLOY_IMAGE_REPO),--set global.image.repository=$(DEPLOY_IMAGE_REPO)/nico-core --set global.image.pullPolicy=Always --set nico-flow.images.flow.repository=$(DEPLOY_IMAGE_REPO)/nico-flow,)
+# RMS selects its image via apiServer.image.repository (not global); map
+# DEPLOY_IMAGE_REPO to that explicit path.
+RMS_IMAGE_OVERRIDE := $(if $(DEPLOY_IMAGE_REPO),--set apiServer.image.repository=$(DEPLOY_IMAGE_REPO)/rms-api --set global.image.pullPolicy=Always,)
 
 # Namespace the machine-a-tron BuildConfig/ImageStream/Deployment live in.
 MAT_NAMESPACE ?= nico-system
@@ -40,51 +62,70 @@ MAT ?=
 # exits without resource pools, so a real deploy MUST supply them. Default is
 # the production overlay (pools/networks, no bypass); MAT=1 swaps to the
 # machine-a-tron overlay, which carries its own pools + emulator bypass flags.
-# Override with SITE_VALUES=<file>, or set SITE=<name> to auto-resolve all three
-# per-site override files: helm/values/{nico-core,prereqs,infra-site}-<SITE>.yaml.
-# SITE (and anything else) can live in a git-ignored deploy.env so the make
-# targets need no args. Command-line SITE=... still wins over deploy.env.
--include deploy.env
-SITE ?=
-SITE_VALUES ?= $(if $(SITE),helm/values/nico-core-$(SITE).yaml,helm/values/nico-core-site.yaml)
-# Per-site overrides for the prereqs and infra-site charts (MetalLB operators /
-# operand). Empty (no SITE) = charts' neutral defaults, i.e. MetalLB stays off.
-PREREQS_VALUES ?= $(if $(SITE),helm/values/prereqs-$(SITE).yaml)
-SITE_INFRA_VALUES ?= $(if $(SITE),helm/values/infra-site-$(SITE).yaml)
+# Override with SITE_VALUES=<file> for a site-specific config.
+SITE_VALUES ?= helm/values/nico-core-site.yaml
 SITE_CONFIG_FLAG := $(if $(MAT),-f $(MAT_VALUES),-f $(SITE_VALUES))
 
-# Data-plane MetalLB shared VIP: all services (API, PXE, DNS, DHCP) on one IP,
-# different ports. When set, automatically enables MetalLB in prereqs and infra-site.
-# Resolve from numbered vars in deploy.env based on SITE (e.g., DATAPLANE_VIP_SITE1).
-toupper = $(shell echo $(1) | tr a-z A-Z)
-DATAPLANE_VIP     ?= $(DATAPLANE_VIP_$(call toupper,$(SITE)))
-DATAPLANE_POOL    ?= $(DATAPLANE_POOL_$(call toupper,$(SITE)))
-DATAPLANE_NIC     ?= $(DATAPLANE_NIC_$(call toupper,$(SITE)))
-DATAPLANE_NODE_IP ?= $(DATAPLANE_NODE_IP_$(call toupper,$(SITE)))
-# Annotation key (dots escaped for --set). All services use the same shared IP.
-MLB_ANN := externalService.annotations.metallb\.universe\.tf/loadBalancerIPs
-DATAPLANE_VIP_SET := \
-  $(if $(DATAPLANE_VIP),--set-string 'nico-api.$(MLB_ANN)=$(DATAPLANE_VIP)' --set-string 'nico-api.certificate.ipAddresses[0]=$(DATAPLANE_VIP)' --set-string 'nico-pxe.$(MLB_ANN)=$(DATAPLANE_VIP)' --set-string 'unbound.$(MLB_ANN)=$(DATAPLANE_VIP)' --set-string 'nico-dhcp.$(MLB_ANN)=$(DATAPLANE_VIP)' --set 'nico-api.externalService.annotations.metallb\.universe\.tf/allow-shared-ip=nico-site-vip' --set 'nico-pxe.externalService.annotations.metallb\.universe\.tf/allow-shared-ip=nico-site-vip' --set 'unbound.externalService.annotations.metallb\.universe\.tf/allow-shared-ip=nico-site-vip' --set 'nico-dhcp.externalService.annotations.metallb\.universe\.tf/allow-shared-ip=nico-site-vip' --set-string 'unbound.localData[0].addresses[0]=$(DATAPLANE_VIP)' --set-string 'unbound.localData[1].addresses[0]=$(DATAPLANE_VIP)' --set-string 'nico-dhcp.config.kea.hookParameters.nameservers=$(DATAPLANE_VIP)' --set-string 'nico-dhcp.config.kea.hookParameters.provisioningServer=$(DATAPLANE_VIP)')
-DATAPLANE_INFRA_SET := \
-  $(if $(DATAPLANE_VIP),--set 'metallb.enabled=true') \
-  $(if $(DATAPLANE_POOL),--set-string 'metallb.addresses[0]=$(DATAPLANE_POOL)') \
-  $(if $(DATAPLANE_NIC),--set-string 'metallb.interfaces[0]=$(DATAPLANE_NIC)' --set-string 'nodeNetwork.enabled=true' --set-string 'nodeNetwork.interface=$(DATAPLANE_NIC)') \
-  $(if $(DATAPLANE_NODE_IP),--set-string 'nodeNetwork.address=$(DATAPLANE_NODE_IP)')
-DATAPLANE_PREREQS_SET := \
-  $(if $(DATAPLANE_VIP),--set 'metallb.enabled=true' --set 'nmstate.enabled=true')
+# RMS (rack-manager) values override, deployed in the site profile (nico-system).
+RMS_VALUES := helm/values/rms.yaml
+
+# E2E overlay (NICo + KubeVirt + vbmc-rs + Metal3, see e2e-nico-kubevirt-sno.md).
+# ADDITIVE on top of the site profile (unlike MAT, which swaps it): stands up the
+# node-as-fabric provisioning L2 + a hostNetwork DHCP relay so kea receives
+# relayed unicast and its libdhcp hook allocates from the real segment, plus a
+# blank-disk KubeVirt worker VM to be netbooted. nico-dhcp itself stays pristine
+# upstream; the nico-dhcp SCC (port-67 bind) is production-general and applied
+# unconditionally. Opt in with `make deploy-site E2E=1`; off by default so a
+# normal site deploy is unaffected.
+E2E_VALUES := helm/values/nico-core-e2e.yaml
+E2E ?=
+E2E_CONFIG_FLAG := $(if $(E2E),-f $(E2E_VALUES),)
+# When E2E=1, inject the nico-admin-ca public cert into nico-api's admin client
+# trust store (adminRootCertPem → admin_root_cafile_path). Without this the
+# nico-admin-cli gets BadCertificate on every call. The cert is extracted at
+# make-time from the cluster; the Makefile silently skips if the secret doesn't
+# exist yet (first deploy before vault-init).
+_ADMIN_CA_CERT := $(shell oc get secret nico-admin-ca-secret -n nico-system \
+  -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d > /tmp/nico-admin-ca.crt 2>/dev/null && echo /tmp/nico-admin-ca.crt)
+E2E_ADMIN_ROOT_FLAG := $(if $(and $(E2E),$(_ADMIN_CA_CERT)),--set-file nico-api.siteConfig.adminRootCertPem=$(_ADMIN_CA_CERT),)
+NICO_DHCP_SCC := helm/openshift/nico-dhcp-scc.yaml
+# E2E provisioning fabric manifests. Production-faithful model: the nmstate
+# operator + a node L2 UPLINK bridge (nicoprov0, no node IP) that cables the
+# nested worker VM to the external FRR ToR (nico-tor libvirt VM). The ToR owns the
+# provisioning gateway (.253.1) and runs the DHCP relay; the worker reaches the
+# nico-dhcp / nico-pxe MetalLB VIPs through the ToR (BGP /32). No node-local relay
+# or boot-proxy — the return-path spike proved OVN DNATs VIP traffic arriving on
+# br-ex once the node default gateway is the ToR (see CLAUDE.md "Networking /
+# MetalLB").
+E2E_NMSTATE := helm/openshift/e2e-nmstate-operator.yaml
+E2E_PROV_NET := helm/openshift/e2e-provisioning-net.yaml
+# Repoints the node default gateway to the FRR ToR so OVN's gateway router returns
+# VIP/provisioning traffic to foreign subnets symmetrically (the load-bearing
+# return-path step; see the manifest header + CLAUDE.md "Networking / MetalLB").
+E2E_DEFAULT_GW := helm/openshift/e2e-node-default-gw.yaml
+# Linux bridge (machine-net0) over the SNO VM's third NIC (enp3s0) + CNV bridge NAD
+# for the worker VM's machine NIC, so the worker gets a 192.168.130.0/24 address.
+E2E_MACHINE_NET := helm/openshift/e2e-machine-net.yaml
+# OVN ClusterUserDefinedNetwork for the BMC segment (192.168.2.0/24). Required by
+# vbmc-rs (Phase 5) and nico-bmc-proxy. Applied in deploy-e2e-net so it pre-exists
+# before Phase 5 applies e2e-vbmc.yaml.
+E2E_CUDN_BMC := helm/openshift/e2e-cudn-bmc.yaml
+# Blank-disk KubeVirt worker VM (Phase 4): stopped on apply (runStrategy Manual,
+# power is vbmc-rs's job from Phase 5). Carries its own WaitForFirstConsumer
+# StorageClass (CDI-on-hostpath needs it). Depends on the nico-prov-vm NAD.
+E2E_WORKER_VM := helm/openshift/e2e-worker-vm.yaml
 
 # Vault topology auto-selection. HA (3-node Raft) needs >=3 schedulable nodes;
 # a single-node (SNO/VM) or 2-node cluster falls back to standalone Vault (file
 # storage) so the default `make deploy-all-site` works everywhere without a
-# separate -crc variant. "Schedulable" excludes nodes with a NoSchedule/
-# NoExecute taint (control-plane, infra, etc.) — the vault chart's default
-# hard pod anti-affinity needs one *untainted* node per replica, and counting
-# tainted nodes here causes `deploy-site-infra` to pick ha on clusters that
-# don't actually have 3 nodes free to run it (FailedScheduling: pod anti-
-# affinity + untolerated taints). Detection runs `oc get nodes -o json` + jq;
-# if oc/jq are unreachable (empty result) it defaults to standalone, which
-# deploys anywhere. Force explicitly with VAULT_MODE=ha or VAULT_MODE=standalone.
-NODE_COUNT := $(shell oc get nodes -o json 2>/dev/null | jq '[.items[] | select((.spec.unschedulable != true) and (([.spec.taints[]? | select(.effect=="NoSchedule" or .effect=="NoExecute")] | length) == 0))] | length' 2>/dev/null)
+# separate -crc variant. Detection runs `oc get nodes`; if oc is unreachable
+# (count 0) it defaults to standalone, which deploys anywhere. Force explicitly
+# with VAULT_MODE=ha or VAULT_MODE=standalone.
+# NOTE: On SNO the single node carries both control-plane and worker roles, so
+# NODE_COUNT=1 correctly maps to standalone. On a cluster with dedicated control-
+# plane nodes that are not schedulable for workloads (taints), Vault HA still
+# requires >=3 worker nodes; override with VAULT_MODE=ha/standalone explicitly.
+NODE_COUNT := $(shell oc get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
 VAULT_MODE ?= $(if $(filter-out 0 1 2,$(NODE_COUNT)),ha,standalone)
 # CRC_VAULT_OVERRIDES is defined further down; use recursive '=' so it resolves
 # at recipe time regardless of definition order.
@@ -104,14 +145,47 @@ export PATH := $(POST_RENDERER_DIR):$(PATH)
 CLOUD_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-rest
 INFRA_CLOUD_KUSTOMIZE := $(CURDIR)/helm/kustomize/infra-cloud
 SITE_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-core
+RMS_KUSTOMIZE := $(CURDIR)/helm/kustomize/rms
 
 # =============================================================================
 # Secrets Management
 # =============================================================================
 
-# Generate Keycloak client secret once per make session
-# Same secret used across all targets in a single make invocation
-KEYCLOAK_CLIENT_SECRET := $(shell openssl rand -base64 32)
+# Keycloak ncx-service client secret.
+# Reuse the value already provisioned in the cluster so re-running
+# deploy-cloud-infra / deploy-cloud (even in separate make invocations) keeps
+# Keycloak and nico-rest in sync; generate a fresh random value only on a
+# first-time deploy. Precedence:
+#   1. nico-rest K8s secret 'keycloak-client-secret' (written by deploy-cloud)
+#   2. Keycloak 'ncx-service' realm client       (written by deploy-cloud-infra)
+#   3. random (openssl)                          (fresh cluster / no cluster)
+# Evaluated once per make invocation (':=') so every target in one run agrees.
+KEYCLOAK_CLIENT_SECRET := $(shell \
+	s=$$(oc get secret keycloak-client-secret -n nico-rest \
+		-o jsonpath='{.data.keycloak-client-secret}' 2>/dev/null | base64 -d 2>/dev/null); \
+	if [ -z "$$s" ] && [ -n "$(CLUSTER_DOMAIN)" ]; then \
+		ku=$$(oc get secret keycloak-admin-secret -n rhbk-operator \
+			-o jsonpath='{.data.username}' 2>/dev/null | base64 -d 2>/dev/null); \
+		kp=$$(oc get secret keycloak-admin-secret -n rhbk-operator \
+			-o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null); \
+		if [ -n "$$ku" ]; then \
+			kc="https://keycloak-rhbk-operator.$(CLUSTER_DOMAIN)"; \
+			t=$$(curl -sk -X POST "$$kc/realms/master/protocol/openid-connect/token" \
+				-d grant_type=password -d client_id=admin-cli \
+				--data-urlencode "username=$$ku" --data-urlencode "password=$$kp" \
+				2>/dev/null | jq -r '.access_token // empty' 2>/dev/null); \
+			if [ -n "$$t" ]; then \
+				u=$$(curl -sk -H "Authorization: Bearer $$t" \
+					"$$kc/admin/realms/nico/clients?clientId=ncx-service" \
+					2>/dev/null | jq -r '.[0].id // empty' 2>/dev/null); \
+				[ -n "$$u" ] && s=$$(curl -sk -H "Authorization: Bearer $$t" \
+					"$$kc/admin/realms/nico/clients/$$u" \
+					2>/dev/null | jq -r '.secret // empty' 2>/dev/null); \
+			fi; \
+		fi; \
+	fi; \
+	[ -n "$$s" ] || s=$$(openssl rand -base64 32); \
+	printf '%s' "$$s")
 
 # =============================================================================
 # Prerequisites
@@ -163,26 +237,8 @@ check-prereqs:
 	fi; \
 	if oc whoami >/dev/null 2>&1; then \
 		echo "  [OK]      oc is logged in to $$(oc whoami --show-server 2>/dev/null)"; \
-		SC=$$(oc get sc -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{end}' 2>/dev/null); \
-		if [ -n "$$SC" ]; then \
-			echo "  [OK]      default StorageClass: $$SC"; \
-		else \
-			echo "  [MISSING] no default StorageClass — PG, Vault, NATS, and Temporal PVCs will fail"; \
-			MISSING=1; \
-		fi; \
-		IR_STATE=$$(oc get configs.imageregistry.operator.openshift.io cluster \
-			-o jsonpath='{.spec.managementState}' 2>/dev/null); \
-		if [ "$$IR_STATE" = "Managed" ] || [ "$$IR_STATE" = "Unmanaged" ]; then \
-			echo "  [OK]      image registry: $$IR_STATE"; \
-		else \
-			echo "  [INFO]    image registry is '$$IR_STATE' — not required for deploy, but some"; \
-			echo "            OpenShift features depend on it. Enable with:"; \
-			echo "            oc patch configs.imageregistry.operator.openshift.io cluster \\"; \
-			echo "              --type merge -p '{\"spec\":{\"managementState\":\"Managed\",\"storage\":{\"emptyDir\":{}}}}'"; \
-		fi; \
 	else \
 		echo "  [MISSING] oc is not logged in to a cluster"; \
-		echo "            (skipping default StorageClass check)"; \
 		MISSING=1; \
 	fi; \
 	echo "" && \
@@ -194,52 +250,23 @@ check-prereqs:
 	fi
 
 # =============================================================================
-# Cluster Bootstrap (optional) — create the OpenShift cluster NICo deploys onto
-# =============================================================================
-# NICo itself is entirely day-2. This target is for fresh test beds: it
-# installs a single-node OpenShift (SNO) on a local libvirt VM (static IP)
-# via the Assisted Installer, plus LVM Storage so a default StorageClass
-# exists. Self-contained in cluster/bootstrap.sh — a trimmed SNO-only
-# extraction of the rh-ecosystem-edge/openshift-dpf cluster chain; nothing
-# DPU/DPF-related runs. Idempotent: an already-installed cluster just
-# (re)downloads its kubeconfig.
-#
-# Required: NICO_BASE_DOMAIN, NICO_API_IP (node IP; DNS for
-# api.<name>.<domain> and *.apps.<name>.<domain> must resolve to it),
-# NICO_GW, NICO_DNS. All other NICO_* vars (name, version, pull secret,
-# netmask, VM sizing, bridge) have defaults in cluster/bootstrap.sh —
-# empty values passed here fall through to those defaults.
-# Host prerequisites: authenticated aicli, libvirt (virt-install), and a
-# bridge (default mgmt-br) on the network that hosts NICO_API_IP.
-
-bootstrap-cluster:
-	@bash cluster/bootstrap.sh install \
-		NICO_CLUSTER_NAME='$(NICO_CLUSTER_NAME)' \
-		NICO_BASE_DOMAIN='$(NICO_BASE_DOMAIN)' \
-		NICO_API_IP='$(NICO_API_IP)' \
-		NICO_GW='$(NICO_GW)' \
-		NICO_DNS='$(NICO_DNS)' \
-		NICO_NETMASK='$(NICO_NETMASK)' \
-		NICO_OPENSHIFT_VERSION='$(NICO_OPENSHIFT_VERSION)' \
-		NICO_PULL_SECRET='$(NICO_PULL_SECRET)' \
-		NICO_VM_PREFIX='$(NICO_VM_PREFIX)' \
-		NICO_LOCAL_GATEWAY='$(NICO_LOCAL_GATEWAY)'
-
-bootstrap-clean:
-	@bash cluster/bootstrap.sh clean \
-		NICO_CLUSTER_NAME='$(NICO_CLUSTER_NAME)' \
-		NICO_VM_PREFIX='$(NICO_VM_PREFIX)' \
-		NICO_DISK_PATH='$(NICO_DISK_PATH)'
-
-# =============================================================================
 # Container Images
 # =============================================================================
 
+# Aggregate targets: build/push every image (rest + core + nicocli + rms).
+docker-build: docker-build-ubi docker-build-core docker-build-nicocli docker-build-unbound docker-build-rms
+
+docker-push: docker-push-ubi docker-push-core docker-push-nicocli docker-push-unbound docker-push-rms
+
 docker-build-ubi:
+	@cd $(UPSTREAM)/rest-api && \
+		git describe --tags HEAD 2>/dev/null | sed 's/^v//' > VERSION || echo "dev" > VERSION
 	@for img in nico-rest-api nico-rest-workflow nico-rest-site-manager nico-rest-site-agent \
 		nico-rest-db nico-rest-cert-manager nico-flow nico-psm nico-nsm; do \
 		echo "Building $$img..." && \
 		podman build -t $(IMAGE_REGISTRY)/$$img:$(IMAGE_TAG) \
+			--secret id=rhsm_org,src=$(RHSM_ORG_FILE) \
+			--secret id=rhsm_activationkey,src=$(RHSM_ACTIVATIONKEY_FILE) \
 			-f $(DOCKERFILE_DIR)/Dockerfile.$$img $(UPSTREAM)/rest-api; \
 	done
 
@@ -251,7 +278,18 @@ docker-build-nicocli:
 docker-push-nicocli:
 	podman push $(IMAGE_REGISTRY)/nicocli:$(IMAGE_TAG)
 
-# nico-core/nico-admin-cli build on UBI and need a live RHEL subscription to
+# unbound (.forge compatibility DNS resolver). UBI-only, no upstream source and
+# no RHEL entitlement needed (unbound is in the UBI appstream repo); build
+# context is docker/ubi so the baked unbound.conf is available to COPY.
+docker-build-unbound:
+	podman build --platform linux/amd64 \
+		-t $(IMAGE_REGISTRY)/nico-unbound:$(IMAGE_TAG) \
+		-f $(DOCKERFILE_DIR)/Dockerfile.unbound $(DOCKERFILE_DIR)
+
+docker-push-unbound:
+	podman push $(IMAGE_REGISTRY)/nico-unbound:$(IMAGE_TAG)
+
+# nico-core builds on UBI and needs a live RHEL subscription to
 # `dnf install rust-toolset` mid-build (see Dockerfile.nico-core) — unlike the
 # plain-Debian machine-a-tron image, there's no way around this. Provide your
 # own RHSM org ID / activation key as plain files (never as --build-arg, which
@@ -266,15 +304,25 @@ docker-build-core:
 		--secret id=rhsm_activationkey,src=$(RHSM_ACTIVATIONKEY_FILE) \
 		-t $(IMAGE_REGISTRY)/nico-core:$(IMAGE_TAG) \
 		-f $(DOCKERFILE_DIR)/Dockerfile.nico-core $(UPSTREAM)
-	podman build \
-		--secret id=rhsm_org,src=$(RHSM_ORG_FILE) \
-		--secret id=rhsm_activationkey,src=$(RHSM_ACTIVATIONKEY_FILE) \
-		-t $(IMAGE_REGISTRY)/nico-admin-cli:$(IMAGE_TAG) \
-		-f $(DOCKERFILE_DIR)/Dockerfile.nico-admin-cli $(UPSTREAM)
 
 docker-push-core:
 	podman push $(IMAGE_REGISTRY)/nico-core:$(IMAGE_TAG)
-	podman push $(IMAGE_REGISTRY)/nico-admin-cli:$(IMAGE_TAG)
+
+# RMS builds on UBI and needs a live RHEL subscription mid-build (aws-lc/tonic
+# toolchain via codeready-builder). Same RHSM secret handling as nico-core.
+# Build context is the vendored nv-rms submodule root (RMS_UPSTREAM).
+# Guard: fail early if the submodule is not checked out.
+docker-build-rms:
+	@test -d $(RMS_UPSTREAM) 2>/dev/null || \
+		{ echo "ERROR: $(RMS_UPSTREAM) not checked out. Run: git submodule update --init helm/vendor/nv-rms" >&2; exit 1; }
+	podman build \
+		--secret id=rhsm_org,src=$(RHSM_ORG_FILE) \
+		--secret id=rhsm_activationkey,src=$(RHSM_ACTIVATIONKEY_FILE) \
+		-t $(IMAGE_REGISTRY)/rms-api:$(IMAGE_TAG) \
+		-f $(DOCKERFILE_DIR)/Dockerfile.rms $(RMS_UPSTREAM)
+
+docker-push-rms:
+	podman push $(IMAGE_REGISTRY)/rms-api:$(IMAGE_TAG)
 
 docker-push-ubi:
 	@for img in nico-rest-api nico-rest-workflow nico-rest-site-manager nico-rest-site-agent \
@@ -328,33 +376,8 @@ machine-a-tron-status:
 # Helm Charts
 # =============================================================================
 
-# Patches for the read-only upstream submodule. Kustomize post-renderers are
-# not applied to helm hook resources, so OpenShift-breaking bits in
-# pre-install hook templates are fixed with a git patch instead. See
-# patches/vendor/README.md. Idempotent: skips if already applied, fails
-# loudly if the submodule commit moved so the patch no longer applies.
-VENDOR_PATCH := patches/vendor/infra-controller.patch
-
-patch-vendor:
-	git submodule update --init
-	@cd $(UPSTREAM) && \
-	if git apply --reverse --check $(CURDIR)/$(VENDOR_PATCH) >/dev/null 2>&1; then \
-		echo "Vendor patch already applied"; \
-	elif git apply --check $(CURDIR)/$(VENDOR_PATCH) >/dev/null 2>&1; then \
-		git apply $(CURDIR)/$(VENDOR_PATCH) && echo "Vendor patch applied"; \
-	else \
-		echo "ERROR: $(VENDOR_PATCH) does not apply to the checked-out $(UPSTREAM) commit." >&2; \
-		echo "The submodule may have moved — rebase the patch or update the pin." >&2; \
-		exit 1; \
-	fi
-
 helm-dep-build:
 	git submodule update --init
-	$(MAKE) patch-vendor
-	helm repo add temporal https://go.temporal.io/helm-charts --force-update
-	helm repo add hashicorp https://helm.releases.hashicorp.com --force-update
-	helm repo add nats https://nats-io.github.io/k8s/helm/charts/ --force-update
-	helm repo update >/dev/null
 	helm dependency build helm/infra-cloud/
 	helm dependency build helm/infra-site/
 
@@ -365,6 +388,7 @@ helm-lint: helm-dep-build
 	helm template nico-rest $(NICO_REST_CHART) -n nico-rest -f helm/values/nico-rest.yaml > /dev/null
 	helm template nico-core $(NICO_CORE_CHART) -n nico-system -f helm/values/nico-core.yaml > /dev/null
 	helm template nico-core $(NICO_CORE_CHART) -n nico-system -f helm/values/nico-core.yaml -f $(MAT_VALUES) > /dev/null
+	helm template rack-manager $(RMS_CHART) -n nico-system -f $(RMS_VALUES) > /dev/null
 
 helm-template: helm-dep-build
 	@echo "--- prereqs ---"
@@ -389,6 +413,10 @@ helm-template: helm-dep-build
 	@echo "--- nico-rest-site-agent (upstream) ---"
 	helm template site-agent $(NICO_SITE_AGENT_CHART) -n nico-system \
 		-f helm/values/nico-rest-site-agent.yaml
+	@echo "--- rms (upstream) ---"
+	helm template rack-manager $(RMS_CHART) -n nico-system \
+		-f $(RMS_VALUES) \
+		--post-renderer $(POST_RENDERER) --post-renderer-args $(RMS_KUSTOMIZE)
 
 # =============================================================================
 # Deploy — Cloud Profile
@@ -397,21 +425,20 @@ helm-template: helm-dep-build
 deploy-prereqs:
 	helm upgrade --install -n default nvidia-infra-controller-prereqs \
 		helm/nvidia-infra-controller-prereqs/ \
-		$(if $(PREREQS_VALUES),-f $(PREREQS_VALUES)) \
-		$(DATAPLANE_PREREQS_SET) \
-		--wait --timeout 15m
+		--wait --timeout 30m
 
 deploy-cloud-infra: helm-dep-build
 	helm upgrade --install -n nico-rest nico-rest-infra \
 		helm/infra-cloud/ \
-		--create-namespace --wait --timeout 10m \
+		--create-namespace --wait --timeout 30m \
 		--set nico-rest-common.secrets.keycloakClientSecret.value="$(KEYCLOAK_CLIENT_SECRET)" \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(INFRA_CLOUD_KUSTOMIZE)
 
 deploy-cloud:
 	helm upgrade --install -n nico-rest nico-rest \
-		$(NICO_REST_CHART) --wait --timeout 10m \
+		$(NICO_REST_CHART) --wait --timeout 30m \
 		-f helm/values/nico-rest.yaml \
+		$(CLOUD_IMAGE_OVERRIDE) \
 		--set nico-rest-api.config.keycloak.externalBaseURL=https://keycloak-rhbk-operator.$(CLUSTER_DOMAIN) \
 		--set nico-rest-common.secrets.keycloakClientSecret.value="$(KEYCLOAK_CLIENT_SECRET)" \
 		--set global.image.repository="$(IMAGE_REGISTRY)" \
@@ -426,7 +453,7 @@ deploy-all-cloud: deploy-prereqs helm-dep-build
 	@echo "=========================================="
 	helm upgrade --install -n nico-rest nico-rest-infra \
 		helm/infra-cloud/ \
-		--create-namespace --wait --timeout 10m \
+		--create-namespace --wait --timeout 30m \
 		--set nico-rest-common.secrets.keycloakClientSecret.value="$(KEYCLOAK_CLIENT_SECRET)" \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(INFRA_CLOUD_KUSTOMIZE)
 	@echo ""
@@ -434,8 +461,9 @@ deploy-all-cloud: deploy-prereqs helm-dep-build
 	@echo "Deploying Cloud Application"
 	@echo "=========================================="
 	helm upgrade --install -n nico-rest nico-rest \
-		$(NICO_REST_CHART) --wait --timeout 10m \
+		$(NICO_REST_CHART) --wait --timeout 30m \
 		-f helm/values/nico-rest.yaml \
+		$(CLOUD_IMAGE_OVERRIDE) \
 		--set nico-rest-api.config.keycloak.externalBaseURL=https://keycloak-rhbk-operator.$(CLUSTER_DOMAIN) \
 		--set nico-rest-common.secrets.keycloakClientSecret.value="$(KEYCLOAK_CLIENT_SECRET)" \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(CLOUD_KUSTOMIZE)
@@ -485,12 +513,10 @@ bootstrap-org:
 # =============================================================================
 
 deploy-site-infra: helm-dep-build
-	@echo "=== Vault topology: $(VAULT_MODE) (detected $(NODE_COUNT) schedulable node(s)) ==="
+	@echo "=== Vault topology: $(VAULT_MODE) (detected $(NODE_COUNT) node(s)) ==="
 	helm upgrade --install -n nico-system nico-site-infra \
 		helm/infra-site/ \
 		--create-namespace --timeout 15m \
-		$(if $(SITE_INFRA_VALUES),-f $(SITE_INFRA_VALUES)) \
-		$(DATAPLANE_INFRA_SET) \
 		$(VAULT_OVERRIDES)
 
 vault-init:
@@ -547,8 +573,6 @@ vault-init:
 	oc exec $$V -n $$NS -- sh -c "export VAULT_TOKEN=$$RT VAULT_SKIP_VERIFY=true && \
 		vault write nicoca/config/ca pem_bundle=@/tmp/ca-bundle.pem && \
 		vault write nicoca/roles/nico-cluster allow_any_name=true allowed_uri_sans='spiffe://*' max_ttl=720h ttl=720h key_type=ec key_bits=256 require_cn=false use_csr_common_name=true && \
-		echo 'Creating nico-cli-client PKI role for nico-admin-cli client certs...' && \
-		vault write nicoca/roles/nico-cli-client allow_any_name=true enforce_hostnames=false client_flag=true server_flag=false max_ttl=24h ttl=1h key_type=ec key_bits=256 ou=nico-cli-client && \
 		vault auth enable kubernetes 2>/dev/null || true && \
 		vault write auth/kubernetes/config kubernetes_host=https://\$$KUBERNETES_SERVICE_HOST:\$$KUBERNETES_SERVICE_PORT && \
 		echo 'path \"nicoca/sign/nico-cluster\" { capabilities = [\"create\", \"update\"] }' | vault policy write cert-manager-nico-policy - && \
@@ -579,30 +603,6 @@ vault-init:
 	echo "{\"apiVersion\":\"cert-manager.io/v1\",\"kind\":\"ClusterIssuer\",\"metadata\":{\"name\":\"vault-nico-issuer\"},\"spec\":{\"vault\":{\"path\":\"nicoca/sign/nico-cluster\",\"server\":\"https://vault.nico-system.svc:8200\",\"caBundle\":\"$$CA_B64\",\"auth\":{\"kubernetes\":{\"role\":\"cert-manager-nico-issuer\",\"mountPath\":\"/v1/auth/kubernetes\",\"secretRef\":{\"name\":\"vault-nicoca-issuer-token\",\"key\":\"token\"}}}}}}" | oc apply -f - && \
 	echo "=== Vault fully configured ==="
 
-ADMIN_CERT_DIR := $(HOME)/.nico
-
-# Issue a short-lived (24h) client certificate from Vault PKI for
-# nico-admin-cli. The cert's issuer CN (nico-root-ca) must be listed in
-# nico-api's auth.additionalIssuerCns for the internal RBAC to recognize
-# it as ForgeAdminCLI. Run after vault-init; re-run when the cert expires.
-vault-admin-cert:
-	@echo "=== Issuing nico-admin-cli client certificate ===" && \
-	NS=nico-system && \
-	V=vault-0 && \
-	RT=$$(oc get secret vault-unseal-secret -n $$NS -o jsonpath='{.data.root-token}' | base64 -d) && \
-        mkdir -p "$(ADMIN_CERT_DIR)" && \
-	CERT_JSON=$$(oc exec $$V -n $$NS -c vault -- sh -c " \
-		VAULT_ADDR=https://vault.nico-system:8200 \
-		VAULT_CACERT=/tmp/ca-bundle.pem \
-		VAULT_TOKEN=$$RT \
-		vault write -format=json nicoca/issue/nico-cli-client \
-			common_name=nico-admin ttl=24h") && \
-	echo "$$CERT_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print(d['certificate'])" > $(ADMIN_CERT_DIR)/admin-tls.crt && \
-	echo "$$CERT_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print(d['private_key'])" > $(ADMIN_CERT_DIR)/admin-tls.key && \
-	echo "$$CERT_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print(d['issuing_ca'])" > $(ADMIN_CERT_DIR)/admin-ca.crt && \
-	chmod 600 $(ADMIN_CERT_DIR)/admin-tls.key && \
-	echo "Certificate written to $(ADMIN_CERT_DIR)/admin-tls.{crt,key,ca.crt} (valid 24h)"
-
 # nico-ssh-console-rs expects a pre-existing `ssh-host-key` Secret that no
 # chart in this repo creates.
 ensure-ssh-host-key:
@@ -616,24 +616,56 @@ ensure-ssh-host-key:
 			--from-file=ssh_host_ed25519_key_pub="$$TMPDIR/ssh_host_ed25519_key.pub" \
 	)
 
-deploy-site: ensure-ssh-host-key patch-vendor
-	@# extraDnsNames[0]: legacy DPU agent compatibility (issue #2823).
-	@# extraDnsNames[1]: passthrough route hostname so nico-admin-cli can
-	@#   connect via the route without TLS hostname mismatch (the server cert
-	@#   must include the route's FQDN in its SANs).
-	helm upgrade --install -n nico-system nico-core \
-		$(NICO_CORE_CHART) --wait --timeout 10m \
-		-f helm/values/nico-core.yaml $(SITE_CONFIG_FLAG) \
-		--set global.image.repository="$(IMAGE_REGISTRY)/nico-core" \
-		--set global.image.tag="$(IMAGE_TAG)" \
-		--set 'nico-api.certificate.extraDnsNames[0]=carbide-api.forge' \
-		--set 'nico-api.certificate.extraDnsNames[1]=nico-api-grpc-nico-system.$(CLUSTER_DOMAIN)' \
-		$(DATAPLANE_VIP_SET) \
+# The nico-dhcp SCC is applied UNCONDITIONALLY: kea must bind UDP/67 on any
+# OpenShift site (relay or MetalLB VIP), so the port-67 fix is production-general,
+# not e2e-only (see helm/openshift/nico-dhcp-scc.yaml and the containerSecurity
+# Context block in helm/values/nico-core.yaml). E2E additionally stands up the
+# provisioning fabric (deploy-e2e-net) before Helm; the site-facing Core services
+# are reached over their MetalLB VIPs (nico-core-site.yaml externalService), so no
+# post-Helm node-local relay/boot-proxy is applied.
+deploy-site: ensure-ssh-host-key
+	oc apply -f $(NICO_DHCP_SCC)
+	$(if $(E2E),$(MAKE) deploy-e2e-net && ,)helm upgrade --install -n nico-system nico-core \
+		$(NICO_CORE_CHART) --wait --timeout 30m \
+		-f helm/values/nico-core.yaml $(SITE_CONFIG_FLAG) $(E2E_CONFIG_FLAG) \
+		$(SITE_IMAGE_OVERRIDE) $(E2E_ADMIN_ROOT_FLAG) \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(SITE_KUSTOMIZE)
-	@# Create a passthrough route for nico-admin-cli gRPC access (HTTP/2
-	@# requires passthrough — edge/reencrypt downgrades to HTTP/1.1).
-	@oc get route nico-api-grpc -n nico-system >/dev/null 2>&1 || \
-		oc create route passthrough nico-api-grpc --service=nico-api --port=grpc -n nico-system
+
+# E2E-only provisioning fabric. Production-faithful: the provisioning segment is a
+# real external L2 owned by the FRR ToR (nico-tor libvirt VM), which owns the
+# gateway (.253.1) and relays DHCP. Installs the kubernetes-nmstate operator, then
+# creates a node L2 UPLINK bridge (nicoprov0, NO node IP) whose only port is the
+# SNO's second NIC (enp7s0 -> nico-prov libvirt net -> ToR). The nested worker VM
+# attaches to nicoprov0 via the nico-prov-vm NAD and is L2-adjacent to the ToR, a
+# routed client behind the fabric. Then applies the blank-disk worker VM (stopped).
+# See helm/openshift/e2e-*.yaml.
+deploy-e2e-net:
+	# The NMState CR needs the operator's CRD; apply the manifest, wait for the
+	# CRD, then apply again so the NMState CR registers.
+	oc apply -f $(E2E_NMSTATE) || true
+	@echo "Waiting for the NMState CRD..."
+	@for i in $$(seq 1 60); do oc get crd nmstates.nmstate.io >/dev/null 2>&1 && break; sleep 5; done
+	oc apply -f $(E2E_NMSTATE)
+	@echo "Waiting for the nmstate handler DaemonSet..."
+	@for i in $$(seq 1 60); do oc get ds/nmstate-handler -n openshift-nmstate >/dev/null 2>&1 && break; sleep 5; done
+	oc rollout status ds/nmstate-handler -n openshift-nmstate --timeout=300s
+	oc apply -f $(E2E_PROV_NET)
+	oc wait nncp/nicoprov0 --for=condition=Available --timeout=300s
+	# machine-net0 bridge (enp3s0) + nico-machine-net CNV NAD for worker VM machine NIC.
+	oc apply -f $(E2E_MACHINE_NET)
+	oc wait nncp/machine-net0 --for=condition=Available --timeout=300s
+	# Repoint the node default gateway to the FRR ToR (load-bearing return path).
+	oc apply -f $(E2E_DEFAULT_GW)
+	oc wait nncp/node-default-gw-tor --for=condition=Available --timeout=300s
+	# OVN derives GR_<node>'s default next-hop at gateway-init and does not re-read
+	# the runtime route change above; restart ovnkube-node once so GR_<node>
+	# reconverges 0.0.0.0/0 -> the ToR. Idempotent (no-op if already converged).
+	oc rollout restart ds/ovnkube-node -n openshift-ovn-kubernetes
+	oc rollout status ds/ovnkube-node -n openshift-ovn-kubernetes --timeout=300s
+	# BMC CUDN (OVN Layer2, 192.168.2.0/24) — required before Phase 5 vbmc-rs deploy.
+	oc apply -f $(E2E_CUDN_BMC)
+	# Blank-disk worker VM (stopped; nico-prov-vm NAD from E2E_PROV_NET above).
+	oc apply -f $(E2E_WORKER_VM)
 
 # Site configuration
 SITE_NAME ?=
@@ -694,145 +726,28 @@ endif
 	helm upgrade --install -n nico-system nico-rest-site-agent \
 		$(NICO_SITE_AGENT_CHART) --wait --timeout 5m \
 		-f helm/values/nico-rest-site-agent.yaml \
-		--set global.image.repository="$(IMAGE_REGISTRY)" \
-		--set global.image.tag="$(IMAGE_TAG)" \
+		$(CLOUD_IMAGE_OVERRIDE) \
 		--set envConfig.CLUSTER_ID=$$SITE_ID_VAL \
 		--set envConfig.TEMPORAL_SUBSCRIBE_NAMESPACE=$$SITE_ID_VAL \
 		--set bootstrap.enabled=true
 
-# NOTE: there is no standalone deploy-flow target — Flow ships inside the
-# nico-core umbrella chart (values: nico-flow.enabled=true), so installing it
-# separately collides on the namespace and the `flow` ServiceAccount.
+# nico-flow is deployed as part of the Core umbrella chart (nico-flow.enabled in
+# helm/values/nico-core.yaml, with the remove-flow-namespace kustomize patch), so
+# it is NOT a separate release. A standalone deploy-flow would collide on the
+# nico-system namespace ownership.
 
-deploy-all-site: deploy-site-infra vault-init deploy-site
+# RMS (rack-manager) — site-level gRPC rack manager, called by Core over mTLS.
+# Requires the site infra (rms DB/user on nico-site-pg, rms-firmware PVC) and the
+# vault-nico-issuer ClusterIssuer (from vault-init) for its API server cert.
+# The Crunchy secret key fix is applied via the fix-rms-secret-keys post-renderer.
+deploy-rms:
+	helm upgrade --install -n nico-system rack-manager \
+		$(RMS_CHART) --wait --timeout 30m \
+		-f $(RMS_VALUES) \
+		$(RMS_IMAGE_OVERRIDE) \
+		--post-renderer $(POST_RENDERER) --post-renderer-args $(RMS_KUSTOMIZE)
 
-# Deploy to all configured sites in one command. Define SITES in deploy.env:
-#   SITES=site1 site2 site3
-deploy-all-sites:
-	@[ -n "$(SITES)" ] || { echo "ERROR: SITES is required, e.g. SITES='site1 site2' make deploy-all-sites"; exit 1; }
-	@for site in $(SITES); do \
-		echo "" && \
-		echo "╔═══════════════════════════════════════════════════╗" && \
-		echo "║  Deploying $$site  ║" && \
-		echo "╚═══════════════════════════════════════════════════╝" && \
-		$(MAKE) deploy-dataplane-vip SITE=$$site || { echo "✗ $$site failed"; exit 1; }; \
-	done
-	@echo ""
-	@echo "╔═══════════════════════════════════════════════════╗"
-	@echo "║  ✓ All sites deployed successfully  ║"
-	@echo "╚═══════════════════════════════════════════════════╝"
-
-# Create a new per-site Core override file with boilerplate. Only creates the
-# file; user must edit unbound forwarders (upstream DNS) and siteConfig (networks).
-new-site:
-	@[ -n "$(SITE)" ] || { echo "ERROR: SITE required, e.g. make new-site SITE=mysite"; exit 1; }
-	@[ ! -f helm/values/nico-core-$(SITE).yaml ] || { echo "ERROR: helm/values/nico-core-$(SITE).yaml already exists"; exit 1; }
-	@cp helm/values/prereqs-example.yaml helm/values/prereqs-$(SITE).yaml
-	@cp helm/values/infra-site-example.yaml helm/values/infra-site-$(SITE).yaml
-	@cp helm/values/nico-core-example.yaml helm/values/nico-core-$(SITE).yaml
-	@echo "✓ Created all per-site values files:"
-	@echo "  • helm/values/prereqs-$(SITE).yaml"
-	@echo "  • helm/values/infra-site-$(SITE).yaml"
-	@echo "  • helm/values/nico-core-$(SITE).yaml"
-	@echo ""
-	@echo "Next, edit deploy.env and add:"
-	@echo "  SITE=$(SITE)"
-	@echo "  DATAPLANE_VIP_$(shell echo $(SITE) | tr a-z A-Z)=<your-vip>"
-	@echo "  DATAPLANE_POOL_$(shell echo $(SITE) | tr a-z A-Z)=<vip>-<vip+10>"
-	@echo "  DATAPLANE_NIC_$(shell echo $(SITE) | tr a-z A-Z)=<nic>"
-	@echo "  DATAPLANE_NODE_IP_$(shell echo $(SITE) | tr a-z A-Z)=<node-ip>"
-	@echo ""
-	@echo "Then edit helm/values/nico-core-$(SITE).yaml for siteConfig and DNS."
-	@echo ""
-	@echo "Then run: make deploy-dataplane-vip"
-
-# Patch OVN gateway config for secondary-VLAN VIPs (one-time, brief rollout).
-# ONLY needed if your VIP is on a secondary NIC — if it's on the primary network,
-# skip this. Day-1 clusters get this via NICO_LOCAL_GATEWAY bootstrap flag.
-patch-ovn-gateway:
-	@echo "=== Patching OVN gateway config (routingViaHost + ipForwarding) ==="
-	@oc patch network.operator cluster --type merge \
-		-p '{"spec":{"defaultNetwork":{"ovnKubernetesConfig":{"gatewayConfig":{"routingViaHost":true,"ipForwarding":"Global"}}}}}'
-	@echo "Waiting for ovnkube-node rollout..."
-	@oc rollout status daemonset/ovnkube-node -n openshift-ovn-kubernetes --timeout=10m || \
-		{ echo "⚠ Still rolling out (may take a few minutes)"; true; }
-	@echo "✓ OVN gateway patched"
-
-# Enable the MetalLB data-plane VIPs for a site on an EXISTING install. Needs
-# SITE=<name> (or deploy.env) and helm/values/nico-core-<SITE>.yaml.
-# Each step is an idempotent helm upgrade, so it only adds the MetalLB bits.
-deploy-dataplane-vip:
-	@[ -n "$(SITE)" ] || { echo "ERROR: SITE is required (set in deploy.env or CLI, e.g. make deploy-dataplane-vip SITE=myhub)"; exit 1; }
-	@[ -n "$(DATAPLANE_VIP)" ] || { echo "ERROR: DATAPLANE_VIP is required (set in deploy.env)"; exit 1; }
-	@[ -n "$(DATAPLANE_POOL)" ] || { echo "ERROR: DATAPLANE_POOL is required (set in deploy.env)"; exit 1; }
-	@[ -n "$(DATAPLANE_NIC)" ] || { echo "ERROR: DATAPLANE_NIC is required (set in deploy.env)"; exit 1; }
-	@[ -n "$(DATAPLANE_NODE_IP)" ] || { echo "ERROR: DATAPLANE_NODE_IP is required (set in deploy.env)"; exit 1; }
-	@echo "=== Step 1/3: Deploy prerequisites (MetalLB + NMState operators) ==="
-	$(MAKE) deploy-prereqs    SITE=$(SITE)
-	@echo "Waiting for the MetalLB operator to reconcile its CRDs..."
-	@oc rollout status deployment/metallb-operator -n metallb-system --timeout=5m 2>/dev/null || \
-		oc wait --for=condition=Progressing deployment/metallb-operator -n metallb-system --timeout=5m 2>/dev/null || \
-		echo "⚠ MetalLB operator still deploying (OK, it takes a moment)"
-	$(MAKE) verify-prereqs-deployed
-	@echo ""
-	@echo "=== Step 2/3: Deploy site infrastructure (Vault, NATS, PG, MetalLB config) ==="
-	$(MAKE) deploy-site-infra SITE=$(SITE)
-	$(MAKE) verify-infra-deployed
-	@echo ""
-	@echo "=== Step 3/3: Deploy NICo Core with data-plane services ==="
-	$(MAKE) deploy-site       SITE=$(SITE)
-	$(MAKE) verify-core-deployed
-	@echo ""
-	@echo "=== All stages deployed successfully ==="
-	@echo "Next: make verify-dataplane-vip"
-
-# Verify each deployment stage independently (for debugging or re-running checks).
-verify-prereqs-deployed:
-	@echo "=== Checking prerequisites ==="
-	@oc get ns metallb-system >/dev/null || { echo "✗ metallb-system namespace not found"; exit 1; }
-	@oc get ns openshift-nmstate >/dev/null || { echo "✗ openshift-nmstate namespace not found"; exit 1; }
-	@oc get crd ipaddresspools.metallb.io >/dev/null || { echo "✗ MetalLB CRD not found"; exit 1; }
-	@oc get crd nmstates.nmstate.io >/dev/null || { echo "✗ NMState CRD not found"; exit 1; }
-	@echo "✓ All prerequisites present"
-
-verify-infra-deployed:
-	@echo "=== Checking site infrastructure ==="
-	@oc get metallb -n metallb-system >/dev/null || { echo "✗ MetalLB CR not found"; exit 1; }
-	@oc get ipaddresspool -n metallb-system >/dev/null || { echo "✗ IPAddressPool not found"; exit 1; }
-	@oc get crd nodenetworkconfigurationpolicies.nmstate.io >/dev/null || { echo "✗ NNCP CRD not found"; exit 1; }
-	@echo "✓ Infrastructure deployed"
-
-verify-core-deployed:
-	@echo "=== Checking NICo Core ==="
-	@oc get svc -n nico-system nico-api >/dev/null || { echo "✗ nico-api service not found"; exit 1; }
-	@oc get pod -n nico-system -l app=nico-api >/dev/null || { echo "✗ nico-api pods not found"; exit 1; }
-	@echo "✓ NICo Core deployed"
-
-# In-cluster health check for the data-plane VIPs. Flags the common failures
-# (EXTERNAL-IP <pending>, NNCP not configured, speaker down). The external
-# reachability probe can't be automated generically (needs a host on the VLAN),
-# so it's printed as the final manual step.
-verify-dataplane-vip:
-	@echo "=== LoadBalancer services (want an EXTERNAL-IP, not <pending>) ==="
-	@oc get svc -n nico-system 2>/dev/null | grep -E "NAME|LoadBalancer" || echo "  (none — is externalService enabled in your overlay?)"
-	@echo "=== NodeNetworkConfigurationPolicy (want STATUS=Available/SuccessfullyConfigured) ==="
-	@oc get nncp 2>/dev/null || echo "  (none — is nodeNetwork enabled?)"
-	@echo "=== MetalLB pool + advertisement ==="
-	@oc get ipaddresspool,l2advertisement -n metallb-system 2>/dev/null || echo "  (none)"
-	@echo "=== MetalLB pods (want controller + speaker Running) ==="
-	@oc get pods -n metallb-system 2>/dev/null | grep -E "NAME|controller|speaker" || echo "  (operator not installed?)"
-	@echo "=== OVN gateway mode (want routingViaHost:true + ipForwarding:Global for a secondary-NIC VIP) ==="
-	@oc get network.operator cluster -o jsonpath='{.spec.defaultNetwork.ovnKubernetesConfig.gatewayConfig}{"\n"}' 2>/dev/null || true
-	@echo ""
-	@echo "Final check (manual) — from a host ON the data-plane VLAN:"
-	@echo "  nc -vz <VIP> <port>     # api 443, pxe 8080, dns 53"
-	@echo "  VIP answers ARP but ports time out => OVN gateway settings missing."
-	@echo ""
-	@lb=$$(oc get svc -n nico-system -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.metadata.name}{"\t"}{.status.loadBalancer.ingress[0].ip}{"\n"}{end}' 2>/dev/null); \
-	if [ -z "$$lb" ]; then echo "FAIL: no LoadBalancer services in nico-system (externalService not enabled?)"; exit 1; fi; \
-	pending=$$(echo "$$lb" | awk -F'\t' '$$2==""{print $$1}'); \
-	if [ -n "$$pending" ]; then echo "FAIL: LoadBalancer services with no EXTERNAL-IP (<pending>):"; echo "$$pending" | sed 's/^/  /'; exit 1; fi; \
-	echo "OK: all LoadBalancer services have an EXTERNAL-IP assigned."
+deploy-all-site: deploy-site-infra vault-init deploy-site deploy-rms
 
 # =============================================================================
 # CRC (single-node) — overrides for local development on CodeReady Containers
@@ -842,11 +757,11 @@ CRC_VAULT_OVERRIDES := --set vault.server.ha.enabled=false \
 	--set vault.server.standalone.enabled=true \
 	--set-string 'vault.server.standalone.config=listener "tcp" { address = "[::]:8200"\n tls_cert_file = "/vault/userconfig/vault-tls/tls.crt"\n tls_key_file = "/vault/userconfig/vault-tls/tls.key"\n tls_client_ca_file = "/vault/userconfig/vault-tls/ca.crt"\n}\nstorage "file" { path = "/vault/data" }\ndisable_mlock = true'
 
-deploy-cloud-infra-crc: helm-dep-build
-	helm upgrade --install -n nico-rest nico-rest-infra \
-		helm/infra-cloud/ \
-		--create-namespace --wait --timeout 10m \
-		--post-renderer $(POST_RENDERER) --post-renderer-args $(INFRA_CLOUD_KUSTOMIZE)
+# The cloud plane needs no CRC-specific accommodation: every nico-rest workload
+# now runs on restricted-v2 via podSecurityContext: null (PR #4372), so no anyuid
+# grants are required. CRC cloud == production cloud.
+deploy-cloud-infra-crc: deploy-cloud-infra
+deploy-all-cloud-crc: deploy-all-cloud
 
 deploy-site-infra-crc: helm-dep-build
 	helm upgrade --install -n nico-system nico-site-infra \
@@ -854,7 +769,6 @@ deploy-site-infra-crc: helm-dep-build
 		--create-namespace --wait --timeout 15m \
 		$(CRC_VAULT_OVERRIDES)
 
-deploy-all-cloud-crc: deploy-prereqs deploy-cloud-infra-crc deploy-cloud
 deploy-all-site-crc: deploy-site-infra-crc vault-init deploy-site
 
 # =============================================================================
@@ -879,36 +793,6 @@ status:
 	oc get pods -n nico-system --no-headers 2>/dev/null | \
 		awk '{count[$$3]++} END {for (s in count) printf "%s: %d  ", s, count[s]; print ""}' || \
 	echo "(not deployed)"
-	@echo "" && \
-	echo "=== REST API ===" && \
-	( \
-	  _AU=$$(oc get secret keycloak-admin-secret -n rhbk-operator \
-	      -o jsonpath='{.data.username}' | base64 -d 2>/dev/null) && \
-	  _AP=$$(oc get secret keycloak-admin-secret -n rhbk-operator \
-	      -o jsonpath='{.data.password}' | base64 -d 2>/dev/null) && \
-	  _AT=$$(curl -sk --connect-timeout 3 --max-time 10 \
-	      -X POST "$(KC_URL)/realms/master/protocol/openid-connect/token" \
-	      --data-urlencode "grant_type=password" --data-urlencode "client_id=admin-cli" \
-	      --data-urlencode "username=$$_AU" --data-urlencode "password=$$_AP" \
-	      | jq -r .access_token) && \
-	  _CU=$$(curl -sk --connect-timeout 3 --max-time 10 \
-	      -H "Authorization: Bearer $$_AT" \
-	      "$(KC_URL)/admin/realms/nico/clients?clientId=ncx-service" | jq -r '.[0].id') && \
-	  _CS=$$(curl -sk --connect-timeout 3 --max-time 10 \
-	      -H "Authorization: Bearer $$_AT" \
-	      "$(KC_URL)/admin/realms/nico/clients/$$_CU" | jq -r .secret) && \
-	  _TK=$$(curl -sk --connect-timeout 3 --max-time 10 \
-	      -X POST "$(KC_URL)/realms/nico/protocol/openid-connect/token" \
-	      --data-urlencode "grant_type=client_credentials" \
-	      --data-urlencode "client_id=ncx-service" \
-	      --data-urlencode "client_secret=$$_CS" | jq -r .access_token) && \
-	  [ -n "$$_TK" ] && [ "$$_TK" != null ] && \
-	  _SITES=$$(curl -sk --connect-timeout 3 --max-time 10 \
-	      -H "Authorization: Bearer $$_TK" \
-	      "$(API_URL)/v2/org/ncx/nico/site" \
-	      | jq -r '[.[].name] | join(", ")' 2>/dev/null) && \
-	  echo "  OK — registered sites: $${_SITES:-none}" \
-	) 2>/dev/null || echo "  not reachable from this host (see README step 7)"
 
 ## reset-dpu-endpoint BMC_IP=<ip> — Re-trigger preingestion for a static-IP DPU whose
 ## preingestion_state is stuck at "complete" but has no machine record (e.g. after a

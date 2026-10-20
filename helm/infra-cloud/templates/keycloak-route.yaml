@@ -1,0 +1,35 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Keycloak reencrypt route — created as a post-install/post-upgrade hook at
+weight 15, after setup-issuers (weight 10) has created nico-root-ca-secret.
+This ensures the lookup for the destinationCACertificate succeeds on first
+install instead of requiring a manual patch step.
+*/}}
+{{- if .Values.keycloakInstance.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: keycloak
+  namespace: {{ .Values.keycloakInstance.namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-cloud-infra.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "15"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  to:
+    kind: Service
+    name: keycloak-service
+  port:
+    targetPort: https
+  tls:
+    termination: reencrypt
+    insecureEdgeTerminationPolicy: Redirect
+    {{- $caSecret := lookup "v1" "Secret" "cert-manager" "nico-root-ca-secret" }}
+    {{- if $caSecret }}
+    destinationCACertificate: {{ index $caSecret.data "ca.crt" | b64dec | quote }}
+    {{- end }}
+{{- end }}

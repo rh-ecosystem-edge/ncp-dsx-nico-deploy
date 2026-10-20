@@ -1,0 +1,262 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# E2E Phase 5 — vbmc-rs virtual Redfish BMC for the KubeVirt worker VM(s).
+#
+# DESIGN (API backend, not sidecar+aggregator). vbmc-rs offers two KubeVirt
+# topologies:
+#   * sidecar + aggregator (its Helm chart): a per-VM libvirt sidecar injected
+#     into the virt-launcher pod + an aggregator Redfish entrypoint. Rich data
+#     (block/net I/O, PCI, vTPM) BUT the aggregator discovers only *ready
+#     virt-launcher pods*, and a stopped VM has no VMI, no pod, no libvirtd and
+#     no persistent libvirt domain (KubeVirt creates the domain transiently at
+#     start). So it cannot even list a stopped VM, let alone power it on.
+#   * API backend (this manifest): a standalone vbmc-rs that maps Redfish power
+#     to the KubeVirt subresource API (virtualmachines/start|stop|restart). It
+#     powers on a STOPPED VM — exactly what NICo/Metal3 need (the worker boots
+#     from off via a Redfish Reset) — and serves spec-derived inventory
+#     (CPU/mem/NIC MACs) + vbmc-rs's synthetic firmware/UpdateService. Firmware
+#     in vbmc-rs is static (a virtual BMC; a VM has no flashable firmware), so
+#     RMS gets the same firmware surface here as in sidecar mode; the sidecar's
+#     only advantage — hot telemetry on *running* VMs — is not consumed by NICo
+#     or RMS in this e2e. The smart-hybrid (aggregator that does KubeVirt-API
+#     lifecycle AND proxies telemetry to a sidecar when the VM is up) is tracked
+#     upstream: fabiendupont/vbmc-rs#26.
+#
+# NETWORKING (CUDN-homed, no ClusterIP). The pod attaches to the nico-bmc
+# ClusterUserDefinedNetwork (Layer2 secondary, 192.168.2.0/24) via the multus
+# annotation, and vbmc-rs binds 0.0.0.0:8000, so the Redfish surface is reachable
+# at a stable BMC IP on the isolated BMC L2 — the real-hardware shape, and the
+# same segment RMS is dual-homed onto. No Service/ClusterIP fronts the BMC. The
+# pod keeps its default cluster network solely northbound, to call the KubeVirt
+# subresource API on kube-apiserver (needs cluster DNS + the SA token). Dual-homed
+# exactly like RMS: default net northbound (API), nico-bmc southbound (BMC).
+#
+# TLS (Phase 6). NICo's host-BMC libredfish client is HTTPS-only and connects
+# with danger_accept_invalid_certs() and no client identity (api-core
+# create_redfish_pool), so vbmc-rs serves one-way TLS on 8443 with a self-signed
+# leaf from nico-bootstrap-issuer (Certificate below), and NICo is pointed at the
+# port via site_explorer.bmc_proxy = ":8443". Client identity is by BMC
+# credentials (Redfish Basic), not mTLS — see the [server] block for why
+# tls_client_ca must stay unset for this link.
+#
+# Applied by `make deploy-site E2E=1` after Helm (needs nico-system + the
+# nico-bmc CUDN). NICo credential/ExpectedMachine seeding is Phase 6.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vbmc-rs
+  namespace: nico-system
+  labels:
+    app.kubernetes.io/name: vbmc-rs
+    app.kubernetes.io/part-of: nico-e2e
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nico-e2e-vbmc-rs
+  labels:
+    app.kubernetes.io/name: vbmc-rs
+    app.kubernetes.io/part-of: nico-e2e
+rules:
+  # Read VM/VMI objects for power state + spec-derived inventory.
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines", "virtualmachineinstances"]
+    verbs: ["get", "list", "watch"]
+  # Power lifecycle: PUT (=update) to the KubeVirt subresources. These live under
+  # subresources.kubevirt.io (NOT kubevirt.io); see the vbmc-rs subresource_put
+  # fix. softreboot is a VMI subresource (PushPowerButton).
+  - apiGroups: ["subresources.kubevirt.io"]
+    resources:
+      - virtualmachines/start
+      - virtualmachines/stop
+      - virtualmachines/restart
+      - virtualmachines/addvolume
+      - virtualmachines/removevolume
+    verbs: ["update"]
+  - apiGroups: ["subresources.kubevirt.io"]
+    resources: ["virtualmachineinstances/softreboot"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nico-e2e-vbmc-rs
+  labels:
+    app.kubernetes.io/name: vbmc-rs
+    app.kubernetes.io/part-of: nico-e2e
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nico-e2e-vbmc-rs
+subjects:
+  - kind: ServiceAccount
+    name: vbmc-rs
+    namespace: nico-system
+---
+# Sticky BMC IP. OVN-K UDNs ignore the multus `ips` static-request field, so a
+# deterministic BMC address (the one seeded into NICo as
+# ExpectedMachine.bmc_ip_address) is pinned via an IPAMClaim: OVN persists
+# whatever it allocates on first attach and re-hands the same address on every
+# pod restart, as long as the pod references this claim by name. `network` is the
+# OVN network name from the NAD config (cluster_udn_<cudn-name>), `interface` is
+# the secondary interface (net1). Requires the CUDN's ipam.lifecycle: Persistent
+# (set on nico-bmc). Read the assigned IP back once, then it is stable.
+apiVersion: k8s.cni.cncf.io/v1alpha1
+kind: IPAMClaim
+metadata:
+  name: vbmc-rs-bmc
+  namespace: nico-system
+  labels:
+    app.kubernetes.io/name: vbmc-rs
+    app.kubernetes.io/part-of: nico-e2e
+spec:
+  network: cluster_udn_nico-bmc
+  interface: net1
+---
+# BMC TLS. NICo's libredfish speaks HTTPS only and connects with
+# accept_invalid_certs(true) (real BMCs ship self-signed certs), so a standalone
+# self-signed leaf from the selfSigned nico-bootstrap-issuer is sufficient — no
+# CA chain to trust. The IP SAN is the sticky BMC address from the IPAMClaim; it
+# is cosmetic given accept_invalid_certs but kept for hygiene and future
+# verifying clients.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vbmc-rs-tls
+  namespace: nico-system
+  labels:
+    app.kubernetes.io/name: vbmc-rs
+    app.kubernetes.io/part-of: nico-e2e
+spec:
+  secretName: vbmc-rs-tls
+  issuerRef:
+    name: nico-bootstrap-issuer
+    kind: ClusterIssuer
+  commonName: nico-worker-0-bmc
+  ipAddresses:
+    - 192.168.2.20
+  dnsNames:
+    - vbmc-rs.nico-system.svc
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  duration: 8760h    # 1y
+  renewBefore: 720h  # 30d
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vbmc-rs-config
+  namespace: nico-system
+  labels:
+    app.kubernetes.io/name: vbmc-rs
+    app.kubernetes.io/part-of: nico-e2e
+data:
+  config.toml: |
+    # vbmc-rs KubeVirt API backend. One Redfish System per KubeVirt VM; power
+    # maps to the VM start/stop/restart subresources so a stopped VM boots on a
+    # Redfish Reset. Auth is disabled for the Phase 5 reachability proof; Phase 6
+    # adds accounts matching the NICo BMC credential lookup.
+    backend = "kube_virt"
+
+    # Audit events to stdout (captured by the pod log) — the container runs with a
+    # read-only workdir as an arbitrary OpenShift UID, so the default file target
+    # (audit.jsonl) can't be opened. stdout is the Kubernetes-native audit sink.
+    audit_log_target = "stdout"
+
+    [server]
+    bind_address = "0.0.0.0"
+    # HTTPS on 8443 (unprivileged, so it works under drop: ALL with no
+    # NET_BIND_SERVICE). NICo libredfish is HTTPS-only and defaults to :443, so
+    # the site-config points it here via site_explorer.bmc_proxy = ":8443".
+    #
+    # One-way TLS only (no tls_client_ca / mTLS): NICo's host-BMC libredfish pool
+    # is built with danger_accept_invalid_certs() and NO client identity
+    # (api-core setup.rs create_redfish_pool) — it authenticates with Redfish
+    # Basic/session (username/password), like a physical BMC. Setting
+    # tls_client_ca here would make vbmc-rs demand a client cert NICo never
+    # sends, failing every discovery probe at the TLS handshake. Client identity
+    # is enforced by BMC credentials (ExpectedMachine.bmc_username/password),
+    # not mTLS. (vbmc-rs's mTLS support is for the sidecar<->aggregator link.)
+    port = 8443
+    tls_cert = "/etc/vbmc-rs/tls/tls.crt"
+    tls_key  = "/etc/vbmc-rs/tls/tls.key"
+
+    # Report a Redfish ServiceRoot vendor NICo recognizes. NICo's site-explorer
+    # (via libredfish) rejects an unrecognized ServiceRoot.Vendor with
+    # NICO-SITEEXPLORER-122 before exploration begins; the virtual-BMC emulator
+    # identities "sushy"/"redvirt"/"contoso" map to RedfishVendor::Sushy, which
+    # NICo first-classes as "a development emulator without an AccountService"
+    # (BMC credential rotation becomes a no-op — matching vbmc-rs with auth
+    # disabled). vbmc-rs defaults this to "vbmc-rs"; override to "redvirt" so the
+    # KubeVirt worker's virtual BMC is discoverable.
+    [defaults]
+    vendor = "redvirt"
+
+    [systems.nico-worker-0]
+    name = "nico-worker-0"
+    namespace = "nico-system"
+    vm_name = "nico-worker-0"
+
+    [systems.nico-worker-0.hardware]
+    cpu_count = 4
+    memory_mib = 8192
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vbmc-rs
+  namespace: nico-system
+  labels:
+    app.kubernetes.io/name: vbmc-rs
+    app.kubernetes.io/part-of: nico-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vbmc-rs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vbmc-rs
+        app.kubernetes.io/part-of: nico-e2e
+      annotations:
+        # Southbound BMC interface on the nico-bmc CUDN (192.168.2.0/24), pinned
+        # to a sticky IP via the vbmc-rs-bmc IPAMClaim (see above) so the address
+        # seeded into NICo as ExpectedMachine.bmc_ip_address survives pod
+        # restarts. `ipam-claim-reference` binds this pod's net1 to that claim.
+        k8s.v1.cni.cncf.io/networks: |
+          [{"name":"nico-bmc","namespace":"nico-system","ipam-claim-reference":"vbmc-rs-bmc"}]
+    spec:
+      serviceAccountName: vbmc-rs
+      containers:
+        - name: vbmc-rs
+          image: quay.io/fdupont-redhat/vbmc-rs:latest
+          imagePullPolicy: Always
+          args: ["-c", "/etc/vbmc-rs/config.toml"]
+          ports:
+            - name: redfish
+              containerPort: 8443
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vbmc-rs
+              readOnly: true
+            - name: tls
+              mountPath: /etc/vbmc-rs/tls
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: config
+          configMap:
+            name: vbmc-rs-config
+        - name: tls
+          secret:
+            secretName: vbmc-rs-tls

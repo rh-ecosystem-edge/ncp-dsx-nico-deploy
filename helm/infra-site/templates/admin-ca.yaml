@@ -1,0 +1,50 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+nico-admin-ca: sub-CA for admin CLI client certificates.
+
+nico-api is configured with additional_issuer_cns = ["nico-admin-ca"]. Any
+client certificate whose issuer CN is "nico-admin-ca" is mapped to the
+ExternalUser / ForgeAdminCLI RBAC role, granting full admin access to the
+Core gRPC API (AddExpectedMachine, machine management, etc.).
+
+The CA itself is created here and persists for the lifetime of the site.
+Operators issue leaf certs on-demand from nico-admin-ca-issuer (cert-manager
+Certificate or vault write) and store them in ~/.config/nico/. The CA does
+NOT need to be re-created on every deployment.
+*/}}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nico-admin-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+spec:
+  secretName: nico-admin-ca-secret
+  issuerRef:
+    name: nico-rest-ca-issuer
+    kind: ClusterIssuer
+  commonName: nico-admin-ca
+  isCA: true
+  usages:
+  - cert sign
+  - crl sign
+  duration: 87600h   # 10 years
+  renewBefore: 8760h # renew with 1 year remaining
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: nico-admin-ca-issuer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: nico-admin-ca-secret

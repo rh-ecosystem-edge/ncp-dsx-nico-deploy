@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Posture 3 (e2e) boot-artifacts carrier image.
+#
+# nico-pxe is a STATELESS boot server: it serves whatever is in its blob tree at
+# /public/blobs/internal/<arch>/<blob> and has NO API to upload the discovery
+# ramdisk (docs/bootable_artifacts.md -- you "extract the boot artifacts into
+# pxe/static/blobs/internal/<arch>/" at deploy time; the OsImage/OperatingSystem
+# API is a different layer, the OS installed on an allocated machine). In
+# Kubernetes the served tree is an in-pod emptyDir, so the chart-sanctioned way to
+# populate it is `bootArtifactContainers`: init containers that mount that emptyDir
+# at /forge-boot-artifacts/blobs/internal and copy their payload in.
+#
+# This is the carrier image for that init container. Unlike upstream's per-arch
+# boot-artifacts-x86_64 / -aarch64 images (split only because each is built on a
+# native per-arch runner), this is ONE image for all arches: the blobs are
+# arch-independent data and the carrier only needs to run as an init container on
+# the x86_64 SNO. It carries the NVIDIA-free Posture 3 blobs (ipxe.efi, scout.efi,
+# scout.squashfs) built by build-scout.sh.
+#
+# Base is ubi-micro: it already ships the sh + cp the init container's copy
+# command needs, and it is the smallest UBI base (matches the repo's ubi-micro
+# default for non-build images). Build context is the build-scout.sh output root,
+# so each per-arch dir (x86_64/, and aarch64/ once built) is at the context root:
+#
+#   podman build -t <ref> -f hack/scout-e2e/Dockerfile.boot-artifacts \
+#     ~/nico-e2e-sno/scout-build/out
+#
+# See scout-discovery-os.md (Posture 3) and README.md.
+FROM registry.access.redhat.com/ubi10/ubi-micro:latest
+
+# Carry the boot blobs at the image root, one dir per arch. The init container
+# copies whichever dirs exist into the served tree, e.g.
+# `cp -r /x86_64 /forge-boot-artifacts/blobs/internal`. Add `COPY aarch64 /aarch64`
+# here once the aarch64 blobs are built on a native arm64 host.
+COPY x86_64 /x86_64

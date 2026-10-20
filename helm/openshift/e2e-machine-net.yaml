@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# machine-net0: Linux bridge over the SNO VM's third NIC (enp3s0, MAC 52:54:00:a4:c3:99).
+# Provides L2 connectivity for the nested worker VM's machine NIC so the worker gets a
+# 192.168.130.0/24 address from the libvirt nico-e2e dnsmasq, making kubelet:10250 and
+# MCS reachable from the SNO control plane on the INPUT path.
+#
+# The bridge has no IP. The worker VM's MAC needs unicast DHCP replies from libvirt
+# dnsmasq to reach it via enp3s0 — enable promisc on enp3s0 post-NNCP (see runbook).
+#
+# Interface name: enp3s0 is the third NIC in a 3-NIC SNO VM
+# (enp1s0=machine, enp2s0=prov-uplink, enp3s0=machine-net). Verify with `ip link show`.
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: machine-net0
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: sno
+  desiredState:
+    interfaces:
+    - name: machine-net0
+      type: linux-bridge
+      state: up
+      ipv4:
+        enabled: false
+      ipv6:
+        enabled: false
+      bridge:
+        options:
+          stp:
+            enabled: false
+        port:
+        - name: enp3s0
+---
+# CNV bridge NAD for the worker VM's machine NIC.
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: nico-machine-net
+  namespace: nico-system
+spec:
+  config: |
+    {
+      "cniVersion": "0.3.1",
+      "type": "cnv-bridge",
+      "bridge": "machine-net0",
+      "ipam": {}
+    }

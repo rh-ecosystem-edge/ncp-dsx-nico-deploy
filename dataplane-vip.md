@@ -158,6 +158,12 @@ DATAPLANE_NODE_IP=10.6.145.2    # static IP for the node NIC
 placeholders. When `DATAPLANE_VIP` is set, the make targets automatically enable
 MetalLB and NMState operators. (No separate prereqs or infra-site override files needed.)
 
+When this cluster is managed by DPF/HCP, set `METALLB_MODE=dpf` in
+`deploy.env`. NICo then waits for the DPF-provided MetalLB CRDs, uses
+`openshift-operators` for its pool and advertisement, and does not install a
+second operator or create a second cluster-wide `MetalLB` resource. Leave the
+mode at `standalone` for a NICo-only cluster.
+
 ## Deploy
 
 One command deploys all three stages (each an idempotent helm upgrade, so it's safe

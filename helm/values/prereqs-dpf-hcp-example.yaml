@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Use when DPF/HCP already installed MetalLB on this OpenShift cluster.
+# The chart waits for the existing CRDs but does not install another operator.
+
+metallb:
+  enabled: true
+  manageOperator: false
+  namespace: openshift-operators

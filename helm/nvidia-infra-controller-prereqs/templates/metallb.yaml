@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 */}}
 
-{{- if .Values.metallb.enabled }}
+{{- if and .Values.metallb.enabled .Values.metallb.manageOperator }}
 apiVersion: v1
 kind: Namespace
 metadata:

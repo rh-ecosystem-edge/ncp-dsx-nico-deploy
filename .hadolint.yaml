@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Hadolint configuration for UBI-based NICo images.
+#
+# DL3007: Using :latest — intentional for UBI/UBI-minimal; CI pins digests via
+#         .github/ubi-digests.json for production builds.
+# DL3041: Specify dnf version — not practical when packages come from RHSM
+#         subscription repos where versions are managed by the subscription.
+# DL3013: Pin pip versions — build tooling only (mkosi bootstrap), not runtime.
+# DL3003: Use WORKDIR — mkosi must be invoked from its project directory; `cd`
+#         inside RUN is necessary and intentional for multi-profile builds.
+# DL4006: pipefail — mkosi build stages use `trap ... EXIT` for cleanup; the
+#         pipe pattern (zstd | cpio) is within a single RUN with error propagation.
+# DL3008: Pin apt versions — Ubuntu build toolchain for iPXE; pinning apt
+#         package versions is impractical for transient build containers.
+ignore:
+  - DL3007
+  - DL3041
+  - DL3013
+  - DL3003
+  - DL4006
+  - DL3008

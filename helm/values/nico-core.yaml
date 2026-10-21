@@ -8,12 +8,13 @@
 
 global:
   image:
-    # Built from docker/ubi/Dockerfile.nico-core — quay.io/fdupont-redhat/nico-core
-    # never shipped nico-dhcp/nico-hardware-health/nico-pxe/nico-ssh-console-rs
-    # binaries. Pinned to an immutable tag, not `latest`: this quay.io namespace
-    # already had a stale `latest` cached on cluster nodes from an unrelated
-    # build, and IfNotPresent kept serving it after a new push under the same tag.
-    repository: ghcr.io/rh-ecosystem-edge
+    # Single image shared by all Core services (nico-api, nico-dhcp, nico-dns,
+    # nico-hardware-health, nico-pxe, nico-ssh-console-rs, nico-bmc-proxy), built
+    # from docker/ubi/Dockerfile.nico-core and published by
+    # .github/workflows/build-images.yaml. pullPolicy inherits upstream's
+    # IfNotPresent; override with --set global.image.pullPolicy=Always for local
+    # tests that re-push :latest. Releases pin an immutable tag (see repo tags).
+    repository: ghcr.io/rh-ecosystem-edge/ncp-dsx-nico-deploy/nico-core
     tag: latest
     pullPolicy: IfNotPresent
   spiffe:
@@ -27,6 +28,15 @@ global:
 nico-api:
   enabled: true
   replicas: 1
+  # Drop the chart's default SYS_PTRACE capability (debug-backtraces only, and
+  # inert under OpenShift's non-root range UID anyway). Lets the pod run under
+  # restricted-v2 with no custom SCC. See docker/ubi/Dockerfile.nico-core
+  # (USER 1001) and upstream chart values containerSecurityContext.
+  containerSecurityContext: null
+  # Short backtraces (production-safe) instead of the chart default "full",
+  # which SYS_PTRACE was only ever needed to enrich.
+  env:
+    RUST_BACKTRACE: "1"
   # Chart default (basic) is rejected outright: "CARBIDE_WEB_AUTH_TYPE=basic
   # is not supported" (crates/api-web/src/lib.rs) — dropped upstream without
   # the chart catching up.
@@ -76,16 +86,20 @@ nico-api:
       secretName: vault-unseal-secret
     vaultClusterInfo:
       configMapName: vault-cluster-info
-    # Wrapper secret: re-emits nico-site-pg-pguser-nico with both 'user' and
-    # 'username' keys. The upstream migration Job hardcodes key: username but
-    # Crunchy PGO emits key: user; kustomize cannot patch Helm hook resources.
-    # See helm/infra-site/templates/migration-creds-eso.yaml.
+    # The fork (fix/openshift-compatibility) makes the key name configurable via
+    # nico-api.database.usernameKey. Set to 'user' below to match Crunchy PGO.
     databaseCredentials:
       secretName: nico-site-pg-migration-creds
     databaseConfig:
       configMapName: nico-system-nico-database-config
     nicoWebHostname:
       configMapName: nico-web-api-hostname
+  # Crunchy PGO emits 'user' not 'username'; upstream chart defaults to 'username'.
+  database:
+    usernameKey: user
+  migration:
+    pgIsReadyInit:
+      enabled: true
   vaultClusterInfo:
     VAULT_SERVICE: "https://vault.nico-system:8200"
     NICO_VAULT_MOUNT: "secrets"
@@ -109,8 +123,12 @@ nico-bmc-proxy:
       secretName: nico-site-pg-pguser-nico
     databaseConfig:
       configMapName: nico-system-nico-database-config
+  database:
+    usernameKey: user
 nico-dhcp:
   enabled: true
+  # Drop the chart's default SYS_PTRACE capability (see nico-api).
+  containerSecurityContext: null
   config:
     kea:
       # Chart default is a Debian path; our UBI image installs kea from
@@ -142,12 +160,17 @@ nico-dhcp:
 nico-dns:
   enabled: true
   replicas: 1
+  # Drop the chart's default SYS_PTRACE capability (see nico-api).
+  containerSecurityContext: null
   # Port 53 needs CAP_NET_BIND_SERVICE, but this cluster's runtime doesn't
   # propagate it to the ambient set for non-root exec (CapBnd has it,
   # CapEff doesn't — confirmed via /proc/1/status), so bind() still fails
   # with it granted. Moving off the privileged port avoids needing it.
   listenAddress: "[::]:5353"
   service:
+    # targetPort: the fork (fix/openshift-compatibility) now renders targetPort
+    # from values. Port 53 externally, 5353 inside the container.
+    targetPort: 5353
     ports:
       - port: 5353
         name: tcp
@@ -159,10 +182,16 @@ nico-dns:
   # volume mount not present in the chart template)
 nico-dsx-exchange-consumer:
   enabled: false
+  # Drop the chart's default SYS_PTRACE capability (see nico-api).
+  containerSecurityContext: null
 nico-hardware-health:
   enabled: true
+  # Drop the chart's default SYS_PTRACE capability (see nico-api).
+  containerSecurityContext: null
 nico-pxe:
   enabled: true
+  # Drop the chart's default SYS_PTRACE capability (see nico-api).
+  containerSecurityContext: null
   # Same as nico-api.legacyAlias above — forge-system namespace we don't own.
   legacyAlias:
     enabled: false
@@ -177,6 +206,8 @@ nico-pxe:
     #   command: ["sh", "-c", "cp -r /aarch64 /apt /firmware /boot-artifacts/blobs/internal"]
 nico-ssh-console-rs:
   enabled: true
+  # Drop the chart's default IPC_LOCK capability (see nico-api).
+  containerSecurityContext: null
   # Chart hardcodes port 22 in its static config.toml — same ambient-
   # capability issue as nico-dns above. Content below is that file
   # verbatim except for listen_address; defaults already match this
@@ -221,6 +252,10 @@ unbound:
     tag: "1.26.1"
   exporter:
     enabled: false
+  # Bind unprivileged port 5353 (no CAP_NET_BIND_SERVICE needed under
+  # restricted-v2 SCC). The chart (fix/openshift-compatibility) now renders
+  # containerPort from this value so probes and Deployment ports match.
+  containerPort: 5353
   # The Red Hat UBI image has no shell (/bin/sh) — it's a minimal image with
   # only the unbound binary at /usr/sbin/unbound. The main config is injected
   # via kustomize patch (fix-unbound-config.yaml) because the chart's
@@ -252,11 +287,12 @@ nico-flow:
   flowEnv: production
   images:
     flow:
-      repository: ghcr.io/rh-ecosystem-edge/nico-flow
+      repository: ghcr.io/rh-ecosystem-edge/ncp-dsx-nico-deploy/nico-flow
       tag: latest
   database:
     host: nico-site-pg-primary
     port: 5432
+    usernameKey: user
     certPath: ""
     flow:
       name: flow

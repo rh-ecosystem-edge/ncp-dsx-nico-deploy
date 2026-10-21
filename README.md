@@ -13,6 +13,9 @@ External Secrets Operator, and OpenShift Routes.
 | **[dataplane-vip.md](dataplane-vip.md)** | Complete guide for MetalLB data-plane VIPs: prerequisites, configuration, verification, troubleshooting |
 | **[metallb-loadbalancer-setup.md](metallb-loadbalancer-setup.md)** | Design rationale: why MetalLB, L2 vs BGP, OVN local-gateway requirement, DHCP relay |
 | **[minimal-setup-requirements.md](minimal-setup-requirements.md)** | Storage provisioning for bare clusters (LVM Storage, ODF) |
+| **[docs/e2e-libvirt-openshift.md](docs/e2e-libvirt-openshift.md)** | End-to-end runbook: libvirt-based test environment (SNO + libvirt VMs + vbmc-rs) |
+| **[docs/rhel10-scout.md](docs/rhel10-scout.md)** | RHEL 10 Scout and qcow-imager: all-RHEL mkosi build, lessons learned |
+| **[docs/nvl72-flat-networking.md](docs/nvl72-flat-networking.md)** | FLAT networking guide for GB300 NVL72 (MetalLB on shared subnet) |
 
 **Quick start:** Go to [Data-plane VIPs (MetalLB)](#data-plane-vips-metallb) below.
 
@@ -414,7 +417,7 @@ UBI 10-based images built by Konflux. Dockerfiles in `docker/ubi/`.
 
 ```bash
 make docker-build-ubi    # REST images
-make docker-build-core   # Core + admin-cli images
+make docker-build-core   # Core image (bundles nico-admin-cli binary)
 ```
 
 ## CLI Tools

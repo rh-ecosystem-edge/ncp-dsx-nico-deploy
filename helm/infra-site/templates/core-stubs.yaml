@@ -17,3 +17,22 @@ type: Opaque
 stringData:
   VAULT_ROLE_ID: ""
   VAULT_SECRET_ID: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: casbin-policy-override
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvidia-infra-controller-site-infra.labels" . | nindent 4 }}
+data:
+  casbin-policy.csv: |
+    g, spiffe-service-id/carbide-dhcp, carbide-dhcp
+    g, spiffe-service-id/carbide-dns, carbide-dns
+    g, spiffe-service-id/nico-dhcp, carbide-dhcp
+    g, spiffe-service-id/nico-dns, carbide-dns
+    g, spiffe-machine-id, machine
+    p, carbide-dhcp, forge/DiscoverDhcp
+    p, carbide-dns, forge/LookupRecord
+    p, trusted-certificate, forge/*
+    p, anonymous, forge/Version

@@ -8,9 +8,13 @@
 
 global:
   image:
-    repository: ghcr.io/rh-ecosystem-edge
+    # Base path; the chart appends /<image-name> per service (nico-rest-api,
+    # nico-rest-db, ...). Published by .github/workflows/build-images.yaml.
+    # pullPolicy inherits upstream's IfNotPresent; override with
+    # --set global.image.pullPolicy=Always for local tests that re-push :latest.
+    # Releases pin an immutable tag (see repo tags).
+    repository: ghcr.io/rh-ecosystem-edge/ncp-dsx-nico-deploy
     tag: latest
-    pullPolicy: IfNotPresent
   certificate:
     issuerRef:
       kind: ClusterIssuer
@@ -45,6 +49,9 @@ nico-rest-common:
 
 nico-rest-api:
   replicaCount: 1
+  # Drop the chart's default pod securityContext (runAsUser/fsGroup 1000) so the
+  # pod runs on restricted-v2 with a range UID. See nico-rest-cert-manager.
+  podSecurityContext: null
   service:
     type: ClusterIP
     port: 8388
@@ -107,6 +114,9 @@ nico-rest-api:
       enabled: false
 
 nico-rest-workflow:
+  # Drop the chart's default pod securityContext (runAsUser/fsGroup 1000) on both
+  # worker deployments so they run on restricted-v2. See nico-rest-cert-manager.
+  podSecurityContext: null
   cloudWorker:
     replicaCount: 1
   siteWorker:
@@ -147,6 +157,12 @@ nico-rest-workflow:
 
 nico-rest-site-manager:
   replicaCount: 1
+  # Drop the chart's default pod securityContext (runAsUser/fsGroup 1000),
+  # which restricted-v2 rejects. Nulling it lets OpenShift inject a valid
+  # range UID; the container securityContext is already restricted-v2-safe
+  # (drop ALL, allowPrivilegeEscalation:false, readOnlyRootFilesystem).
+  # Configurable upstream via PR #4372. See nico-rest-cert-manager above.
+  podSecurityContext: null
   args:
     listenPort: 8100
     credsManagerUrl: "https://nico-rest-cert-manager:8000"
@@ -162,10 +178,21 @@ nico-rest-site-manager:
 
 nico-rest-cert-manager:
   enabled: true
+  # Drop the chart's default pod securityContext (runAsUser/fsGroup 65534),
+  # which restricted-v2 rejects (UID must be in the namespace's allocated
+  # range). Nulling it lets OpenShift inject a valid range UID; the
+  # container securityContext is already restricted-v2-safe (drop ALL,
+  # allowPrivilegeEscalation:false, readOnlyRootFilesystem). Replaces the
+  # former fix-credsmgr-securitycontext kustomize patch — configurable
+  # upstream via PR #4372. See nico-core.yaml containerSecurityContext.
+  podSecurityContext: null
   secrets:
     caSigningSecret: ca-signing-secret
 
 nico-rest-db:
+  # Drop the chart's default pod securityContext (runAsUser/fsGroup 1000) on the
+  # migration job so it runs on restricted-v2. See nico-rest-cert-manager.
+  podSecurityContext: null
   waitForPostgres:
     image: registry.redhat.io/rhel10/postgresql-18:latest
   db:

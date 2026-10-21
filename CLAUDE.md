@@ -152,17 +152,16 @@ All images use UBI 10 base, built by Konflux. Dockerfiles in `docker/ubi/`.
 | nico-psm | ubi10/ubi-micro | psm |
 | nico-nsm | ubi10/ubi-minimal | nsm + scripts + sshpass |
 | nico-core | ubi10/ubi-minimal | carbide-api, dns, bmc-proxy |
-| nico-admin-cli | ubi10/ubi-micro | nico-admin-cli (Core gRPC CLI) |
 | nicocli | ubi10/ubi-micro | nicocli (REST API CLI, from OpenAPI) |
 
-Local build: `make docker-build-ubi` (requires submodule checkout)
+Local build: `make docker-build` (requires submodule checkout)
 
 ## Key Makefile Targets
 
 ```
 # Build
-make docker-build-ubi       Build REST images locally
-make docker-build-core      Build Core + admin-cli images locally
+make docker-build           Build all container images locally
+make docker-push            Push all container images to registry
 make helm-dep-build         Build Helm chart dependencies
 make helm-lint              Lint all charts + validate upstream rendering
 make helm-template          Template all charts (dry-run)
@@ -215,15 +214,20 @@ Each kustomize patch maps to one upstream PR:
 
 | Patch | Upstream change |
 |---|---|
-| `fix-core-security-context` | Remove SYS_PTRACE from nico-api |
-| `fix-dsx-exchange-consumer-security-context` | Remove SYS_PTRACE from dsx-exchange-consumer |
-| `fix-credsmgr-securitycontext` | Null securityContext on credsmgr |
 | `fix-core-secret-keys`, `fix-core-deployment-keys` | Support `user` key (Crunchy) alongside `username` |
 | `fix-flow-secret-keys` | Same for Flow containers |
 | `fix-core-migration` | Add pg_isready init container, increase backoffLimit |
-| `fix-db-sslmode`, `fix-db-pullpolicy`, `fix-db-migrate-args` | DB migration robustness |
+| `fix-db-sslmode`, `fix-db-pullpolicy` | DB migration robustness |
 | `fix-api-wait-keycloak` | Init container waiting for Keycloak OIDC |
 | `fix-api-trust-ca` | CA bundle init container for internal TLS trust |
+
+OpenShift `securityContext` compatibility is now **values-driven**, not
+patched: setting `podSecurityContext: null` (nico-rest) /
+`containerSecurityContext: null` (Core) in `helm/values/` drops the upstream
+defaults so pods run on `restricted-v2` with a range UID — no custom SCC, no
+anyuid. This consumes upstream PR #4372 (pod securityContext configurable
+across nico-rest charts) and replaces the former `fix-*-security-context` /
+`fix-credsmgr-securitycontext` / `fix-vault-securitycontext` patches.
 
 ## Post-Deploy Steps
 

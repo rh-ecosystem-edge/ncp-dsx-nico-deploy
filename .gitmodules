@@ -1,3 +1,4 @@
 [submodule "helm/vendor/infra-controller"]
 	path = helm/vendor/infra-controller
-	url = https://github.com/NVIDIA/infra-controller
+	url = https://github.com/fabiendupont/nvidia-infra-controller
+	branch = fix/openshift-compatibility

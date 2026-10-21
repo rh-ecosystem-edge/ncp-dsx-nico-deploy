@@ -39,15 +39,17 @@ RUN ln -sf /usr/lib64/libkea-dhcp.so /usr/lib64/libkea-dhcp++.so
 # build.rs also defaults KEA_LIB_PATH to a Debian path; override it.
 ENV KEA_LIB_PATH="/usr/lib64"
 
-# Upgrade Rust to required version via rustup
+# Upgrade Rust to required version via rustup. Must match upstream's
+# rust-toolchain.toml (channel = "1.97.1"); we rm that file below so this
+# default is what actually builds.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain 1.96.0
+    sh -s -- -y --default-toolchain 1.97.1
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Install protoc
-RUN curl -sLO https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-x86_64.zip && \
-    unzip protoc-28.3-linux-x86_64.zip -d /usr/local && \
-    rm protoc-28.3-linux-x86_64.zip
+RUN curl -sLO https://github.com/protocolbuffers/protobuf/releases/download/v36.1/protoc-36.1-linux-x86_64.zip && \
+    unzip protoc-36.1-linux-x86_64.zip -d /usr/local && \
+    rm protoc-36.1-linux-x86_64.zip
 
 # Initialize PostgreSQL for sqlx compile-time query verification
 RUN mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql && \
@@ -108,30 +110,26 @@ LABEL name="nico-core" \
       io.k8s.description="NICo Infra Controller Core tier" \
       com.redhat.component="nico-core"
 
-COPY --from=builder /app/bin/carbide-api /opt/nico/nico-api
 COPY --from=builder /app/bin/carbide-api /opt/carbide/carbide-api
-COPY --from=builder /app/bin/nico-admin-cli /opt/nico/nico-admin-cli
+COPY --from=builder /app/bin/carbide-dns /opt/carbide/carbide-dns
 COPY --from=builder /app/bin/nico-admin-cli /opt/carbide/nico-admin-cli
-COPY --from=builder /app/bin/carbide-dns /opt/nico/nico-dns
-COPY --from=builder /app/bin/carbide-dsx-exchange-consumer /opt/nico/nico-dsx-exchange-consumer
-COPY --from=builder /app/bin/carbide-bmc-proxy /opt/nico/nico-bmc-proxy
-# Paths below match each chart's /opt/nico or /opt/carbide binary-detection check.
-COPY --from=builder /app/bin/forge-hw-health /opt/nico/nico-hw-health
+COPY --from=builder /app/bin/carbide-dsx-exchange-consumer /opt/carbide/carbide-dsx-exchange-consumer
+COPY --from=builder /app/bin/carbide-bmc-proxy /opt/carbide/carbide-bmc-proxy
 COPY --from=builder /app/bin/forge-hw-health /opt/carbide/forge-hw-health
-COPY --from=builder /app/bin/carbide /opt/nico/nico
 COPY --from=builder /app/bin/carbide /opt/carbide/carbide
-COPY --from=builder /app/bin/ssh-console /opt/nico/ssh-console
 COPY --from=builder /app/bin/ssh-console /opt/carbide/ssh-console
-# Matches nico-core.yaml's nico-dhcp.config.kea.hookLibraryPath.
 COPY --from=builder /app/bin/libdhcp.so /usr/lib64/kea/hooks/libdhcp.so
 
-COPY --from=builder /workspace/crates/api-db/migrations/ /opt/nico/migrations/
-COPY --from=builder /workspace/crates/api/casbin-policy.csv /opt/nico/
+COPY --from=builder /workspace/crates/api-db/migrations/ /opt/carbide/migrations/
+COPY --from=builder /workspace/crates/api/casbin-policy.csv /opt/carbide/casbin-policy.csv
 
-RUN ln -sf /opt/nico/nico-admin-cli /opt/carbide/forge-admin-cli
+RUN ln -sf /opt/carbide/nico-admin-cli /opt/carbide/carbide-admin-cli && \
+    ln -sf /opt/carbide/nico-admin-cli /opt/carbide/forge-admin-cli
+
+ENV CASBIN_POLICY_FILE=/opt/carbide/casbin-policy.csv
 
 USER 1001
 
 EXPOSE 1079 1080 1081
 
-ENTRYPOINT ["/opt/nico/nico-api"]
+ENTRYPOINT ["/opt/carbide/carbide-api"]

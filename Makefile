@@ -61,17 +61,24 @@ DATAPLANE_VIP     ?= $(DATAPLANE_VIP_$(call toupper,$(SITE)))
 DATAPLANE_POOL    ?= $(DATAPLANE_POOL_$(call toupper,$(SITE)))
 DATAPLANE_NIC     ?= $(DATAPLANE_NIC_$(call toupper,$(SITE)))
 DATAPLANE_NODE_IP ?= $(DATAPLANE_NODE_IP_$(call toupper,$(SITE)))
+# MetalLB may already be provided by DPF/HCP on a shared management cluster.
+# DPF mode reuses that operator and singleton MetalLB resource; standalone is
+# the default for NICo-only clusters.
+METALLB_MODE      ?= standalone
+METALLB_NAMESPACE := $(if $(filter dpf,$(METALLB_MODE)),openshift-operators,metallb-system)
+METALLB_MANAGE_OPERATOR := $(if $(filter dpf,$(METALLB_MODE)),false,true)
+METALLB_CREATE_INSTANCE := $(if $(filter dpf,$(METALLB_MODE)),false,true)
 # Annotation key (dots escaped for --set). All services use the same shared IP.
 MLB_ANN := externalService.annotations.metallb\.universe\.tf/loadBalancerIPs
 DATAPLANE_VIP_SET := \
   $(if $(DATAPLANE_VIP),--set-string 'nico-api.$(MLB_ANN)=$(DATAPLANE_VIP)' --set-string 'nico-api.certificate.ipAddresses[0]=$(DATAPLANE_VIP)' --set-string 'nico-pxe.$(MLB_ANN)=$(DATAPLANE_VIP)' --set-string 'unbound.$(MLB_ANN)=$(DATAPLANE_VIP)' --set-string 'nico-dhcp.$(MLB_ANN)=$(DATAPLANE_VIP)' --set 'nico-api.externalService.annotations.metallb\.universe\.tf/allow-shared-ip=nico-site-vip' --set 'nico-pxe.externalService.annotations.metallb\.universe\.tf/allow-shared-ip=nico-site-vip' --set 'unbound.externalService.annotations.metallb\.universe\.tf/allow-shared-ip=nico-site-vip' --set 'nico-dhcp.externalService.annotations.metallb\.universe\.tf/allow-shared-ip=nico-site-vip' --set-string 'unbound.localData[0].addresses[0]=$(DATAPLANE_VIP)' --set-string 'unbound.localData[1].addresses[0]=$(DATAPLANE_VIP)' --set-string 'nico-dhcp.config.kea.hookParameters.nameservers=$(DATAPLANE_VIP)' --set-string 'nico-dhcp.config.kea.hookParameters.provisioningServer=$(DATAPLANE_VIP)')
 DATAPLANE_INFRA_SET := \
-  $(if $(DATAPLANE_VIP),--set 'metallb.enabled=true') \
+  $(if $(DATAPLANE_VIP),--set 'metallb.enabled=true' --set 'metallb.namespace=$(METALLB_NAMESPACE)' --set 'metallb.createInstance=$(METALLB_CREATE_INSTANCE)') \
   $(if $(DATAPLANE_POOL),--set-string 'metallb.addresses[0]=$(DATAPLANE_POOL)') \
   $(if $(DATAPLANE_NIC),--set-string 'metallb.interfaces[0]=$(DATAPLANE_NIC)' --set-string 'nodeNetwork.enabled=true' --set-string 'nodeNetwork.interface=$(DATAPLANE_NIC)') \
   $(if $(DATAPLANE_NODE_IP),--set-string 'nodeNetwork.address=$(DATAPLANE_NODE_IP)')
 DATAPLANE_PREREQS_SET := \
-  $(if $(DATAPLANE_VIP),--set 'metallb.enabled=true' --set 'nmstate.enabled=true')
+  $(if $(DATAPLANE_VIP),--set 'metallb.enabled=true' --set 'metallb.namespace=$(METALLB_NAMESPACE)' --set 'metallb.manageOperator=$(METALLB_MANAGE_OPERATOR)' --set 'nmstate.enabled=true')
 
 # Vault topology auto-selection. HA (3-node Raft) needs >=3 schedulable nodes;
 # a single-node (SNO/VM) or 2-node cluster falls back to standalone Vault (file
@@ -715,7 +722,7 @@ deploy-all-sites:
 		echo "╔═══════════════════════════════════════════════════╗" && \
 		echo "║  Deploying $$site  ║" && \
 		echo "╚═══════════════════════════════════════════════════╝" && \
-		$(MAKE) deploy-dataplane-vip SITE=$$site || { echo "✗ $$site failed"; exit 1; }; \
+		$(MAKE) deploy-dataplane-vip SITE=$$site METALLB_MODE=$(METALLB_MODE) || { echo "✗ $$site failed"; exit 1; }; \
 	done
 	@echo ""
 	@echo "╔═══════════════════════════════════════════════════╗"
@@ -768,16 +775,20 @@ deploy-dataplane-vip:
 	@[ -n "$(DATAPLANE_NIC)" ] || { echo "ERROR: DATAPLANE_NIC is required (set in deploy.env)"; exit 1; }
 	@[ -n "$(DATAPLANE_NODE_IP)" ] || { echo "ERROR: DATAPLANE_NODE_IP is required (set in deploy.env)"; exit 1; }
 	@echo "=== Step 1/3: Deploy prerequisites (MetalLB + NMState operators) ==="
-	$(MAKE) deploy-prereqs    SITE=$(SITE)
-	@echo "Waiting for the MetalLB operator to reconcile its CRDs..."
-	@oc rollout status deployment/metallb-operator -n metallb-system --timeout=5m 2>/dev/null || \
-		oc wait --for=condition=Progressing deployment/metallb-operator -n metallb-system --timeout=5m 2>/dev/null || \
-		echo "⚠ MetalLB operator still deploying (OK, it takes a moment)"
-	$(MAKE) verify-prereqs-deployed
+	$(MAKE) deploy-prereqs    SITE=$(SITE) METALLB_MODE=$(METALLB_MODE)
+	@if [ "$(METALLB_MODE)" = "dpf" ]; then \
+		echo "Using the DPF-provided MetalLB operator in $(METALLB_NAMESPACE)"; \
+	else \
+	echo "Waiting for the MetalLB operator to reconcile its CRDs..."; \
+	oc rollout status deployment/metallb-operator -n $(METALLB_NAMESPACE) --timeout=5m 2>/dev/null || \
+		oc wait --for=condition=Progressing deployment/metallb-operator -n $(METALLB_NAMESPACE) --timeout=5m 2>/dev/null || \
+		echo "⚠ MetalLB operator still deploying (OK, it takes a moment)"; \
+	fi
+	$(MAKE) verify-prereqs-deployed METALLB_MODE=$(METALLB_MODE)
 	@echo ""
 	@echo "=== Step 2/3: Deploy site infrastructure (Vault, NATS, PG, MetalLB config) ==="
-	$(MAKE) deploy-site-infra SITE=$(SITE)
-	$(MAKE) verify-infra-deployed
+	$(MAKE) deploy-site-infra SITE=$(SITE) METALLB_MODE=$(METALLB_MODE)
+	$(MAKE) verify-infra-deployed METALLB_MODE=$(METALLB_MODE)
 	@echo ""
 	@echo "=== Step 3/3: Deploy NICo Core with data-plane services ==="
 	$(MAKE) deploy-site       SITE=$(SITE)
@@ -789,7 +800,7 @@ deploy-dataplane-vip:
 # Verify each deployment stage independently (for debugging or re-running checks).
 verify-prereqs-deployed:
 	@echo "=== Checking prerequisites ==="
-	@oc get ns metallb-system >/dev/null || { echo "✗ metallb-system namespace not found"; exit 1; }
+	@oc get ns $(METALLB_NAMESPACE) >/dev/null || { echo "✗ $(METALLB_NAMESPACE) namespace not found"; exit 1; }
 	@oc get ns openshift-nmstate >/dev/null || { echo "✗ openshift-nmstate namespace not found"; exit 1; }
 	@oc get crd ipaddresspools.metallb.io >/dev/null || { echo "✗ MetalLB CRD not found"; exit 1; }
 	@oc get crd nmstates.nmstate.io >/dev/null || { echo "✗ NMState CRD not found"; exit 1; }
@@ -797,8 +808,8 @@ verify-prereqs-deployed:
 
 verify-infra-deployed:
 	@echo "=== Checking site infrastructure ==="
-	@oc get metallb -n metallb-system >/dev/null || { echo "✗ MetalLB CR not found"; exit 1; }
-	@oc get ipaddresspool -n metallb-system >/dev/null || { echo "✗ IPAddressPool not found"; exit 1; }
+	@oc get metallb -n $(METALLB_NAMESPACE) >/dev/null || { echo "✗ MetalLB CR not found"; exit 1; }
+	@oc get ipaddresspool -n $(METALLB_NAMESPACE) >/dev/null || { echo "✗ IPAddressPool not found"; exit 1; }
 	@oc get crd nodenetworkconfigurationpolicies.nmstate.io >/dev/null || { echo "✗ NNCP CRD not found"; exit 1; }
 	@echo "✓ Infrastructure deployed"
 
@@ -818,9 +829,9 @@ verify-dataplane-vip:
 	@echo "=== NodeNetworkConfigurationPolicy (want STATUS=Available/SuccessfullyConfigured) ==="
 	@oc get nncp 2>/dev/null || echo "  (none — is nodeNetwork enabled?)"
 	@echo "=== MetalLB pool + advertisement ==="
-	@oc get ipaddresspool,l2advertisement -n metallb-system 2>/dev/null || echo "  (none)"
+	@oc get ipaddresspool,l2advertisement -n $(METALLB_NAMESPACE) 2>/dev/null || echo "  (none)"
 	@echo "=== MetalLB pods (want controller + speaker Running) ==="
-	@oc get pods -n metallb-system 2>/dev/null | grep -E "NAME|controller|speaker" || echo "  (operator not installed?)"
+	@oc get pods -n $(METALLB_NAMESPACE) 2>/dev/null | grep -E "NAME|controller|speaker" || echo "  (operator not installed?)"
 	@echo "=== OVN gateway mode (want routingViaHost:true + ipForwarding:Global for a secondary-NIC VIP) ==="
 	@oc get network.operator cluster -o jsonpath='{.spec.defaultNetwork.ovnKubernetesConfig.gatewayConfig}{"\n"}' 2>/dev/null || true
 	@echo ""

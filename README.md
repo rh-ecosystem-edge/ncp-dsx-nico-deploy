@@ -269,6 +269,7 @@ make undeploy
 ```bash
 make new-site SITE=mysite          # auto-create per-site config files
 # edit deploy.env (add DATAPLANE_VIP, DATAPLANE_POOL, DATAPLANE_NIC, DATAPLANE_NODE_IP)
+# set METALLB_MODE=dpf when DPF/HCP already provides MetalLB; otherwise leave the default
 # edit helm/values/nico-core-mysite.yaml (siteConfig, DNS forwarders)
 make patch-ovn-gateway             # one-time, if VIP is on secondary NIC
 make deploy-dataplane-vip          # deploy (idempotent)

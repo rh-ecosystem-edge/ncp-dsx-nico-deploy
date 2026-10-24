@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Use with a DPF/HCP-provided MetalLB instance. Set the address and interface
+# for the NICo site VLAN before deploying.
+
+metallb:
+  enabled: true
+  namespace: openshift-operators
+  # DPF owns the cluster-wide MetalLB resource; NICo owns only this pool and
+  # advertisement.
+  createInstance: false
+  addresses:
+    - 10.0.0.100-10.0.0.110
+  interfaces:
+    - ens1f0
+
+nodeNetwork:
+  enabled: true
+  interface: ens1f0
+  address: 10.0.0.2
+  prefixLength: 24

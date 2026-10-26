@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # End-to-end deploy against a real OpenShift cluster, driven entirely by the
-# repo's Makefile targets. Manual-only (workflow_dispatch): it mutates a live
-# cluster, so it must never run automatically on push/PR.
+# repo's Makefile targets. Runs automatically on pull_request when any of the
+# relevant deployment files change, and can also be triggered manually via
+# workflow_dispatch with custom inputs.
 #
 # Required repo/environment secrets:
 #   OPENSHIFT_SERVER_URL  - API server URL of the target cluster (https://...:6443)
@@ -34,6 +35,13 @@ on:
         type: boolean
         required: false
         default: true
+  pull_request:
+    paths:
+      - 'helm/**'
+      - 'cluster/**'
+      - 'patches/**'
+      - 'Makefile'
+      - '.github/workflows/deploy-e2e.yaml'
 
 # Serialize runs so two workflow runs never deploy/undeploy against the same
 # cluster at the same time.
@@ -44,6 +52,14 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Resolve input defaults here so steps work identically whether triggered
+    # by pull_request (inputs.* are all empty) or workflow_dispatch.
+    # Boolean inputs are stored as the strings 'true'/'false' by GitHub Actions;
+    # the != 'false' guards below treat an empty value as "use the default (true)".
+    env:
+      E2E_SITE_NAME: ${{ inputs.site_name || 'gha-e2e' }}
+      E2E_MAT: ${{ inputs.mat != 'false' }}
+      E2E_SKIP_TLS: ${{ inputs.insecure_skip_tls_verify != 'false' }}
     # Run all steps inside a UBI container instead of directly on the Ubuntu
     # runner, matching this repo's Red Hat/UBI convention. The image has no
     # USER directive (defaults to root), so package installs need no sudo.
@@ -112,7 +128,7 @@ jobs:
         with:
           openshift_server_url: ${{ secrets.OPENSHIFT_SERVER_URL }}
           openshift_token: ${{ secrets.OPENSHIFT_TOKEN }}
-          insecure_skip_tls_verify: ${{ inputs.insecure_skip_tls_verify }}
+          insecure_skip_tls_verify: ${{ env.E2E_SKIP_TLS }}
 
       - name: Check prerequisites
         run: make check-prereqs
@@ -121,10 +137,10 @@ jobs:
         run: make deploy-all-cloud
 
       - name: Deploy site profile (PG, Vault, NATS, nico Core, Flow)
-        run: make deploy-all-site MAT=${{ inputs.mat && '1' || '' }}
+        run: make deploy-all-site MAT=${{ env.E2E_MAT == 'true' && '1' || '' }}
 
       - name: Register site and deploy site-agent
-        run: make deploy-site-agent SITE_NAME="${{ inputs.site_name }}-${{ github.run_id }}"
+        run: make deploy-site-agent SITE_NAME="${{ env.E2E_SITE_NAME }}-${{ github.run_id }}"
 
       - name: Show deployment status
         if: always()

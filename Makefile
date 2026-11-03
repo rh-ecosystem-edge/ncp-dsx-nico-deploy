@@ -9,6 +9,7 @@
 .PHONY: deploy-site-infra vault-init vault-admin-cert ensure-ssh-host-key deploy-site deploy-site-agent
 .PHONY: deploy-all-cloud patch-keycloak-route bootstrap-org deploy-all-site status undeploy
 .PHONY: deploy-dataplane-vip verify-prereqs-deployed verify-infra-deployed verify-core-deployed verify-dataplane-vip
+.PHONY: deploy-dpf-endpoints
 .PHONY: reset-dpu-endpoint
 
 # Upstream source repo (git submodule, read-only)
@@ -641,6 +642,18 @@ deploy-site: ensure-ssh-host-key patch-vendor
 	@# requires passthrough — edge/reencrypt downgrades to HTTP/1.1).
 	@oc get route nico-api-grpc -n nico-system >/dev/null 2>&1 || \
 		oc create route passthrough nico-api-grpc --service=nico-api --port=grpc -n nico-system
+
+# OpenShift Route endpoints for DPF-managed DPU agents on clusters without a
+# data-plane MetalLB VIP. DPU agents use these fixed DNS names; the site DNS
+# must map both names to the default IngressController's reachable address.
+deploy-dpf-endpoints:
+	@oc get route carbide-api -n nico-system >/dev/null 2>&1 || \
+		oc create route passthrough carbide-api --service=nico-api --port=grpc \
+			--hostname=carbide-api.forge -n nico-system
+	@oc get route carbide-pxe -n nico-system >/dev/null 2>&1 || \
+		oc create route edge carbide-pxe --service=nico-pxe --port=http \
+			--hostname=carbide-pxe.forge --insecure-policy=Allow -n nico-system
+	@oc get routes carbide-api carbide-pxe -n nico-system
 
 # Site configuration
 SITE_NAME ?=

@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Let OpenShift assign the namespace UID/GID, remove SYS_PTRACE, and opt into
-# the host user namespaces required by the restricted-v3 SCC.
+# Let OpenShift assign the namespace UID/GID and remove SYS_PTRACE. Keep
+# hostUsers unset so the pod uses restricted-v2; restricted-v3's user namespace
+# causes setgroups failures with the current PXE image on this cluster.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,7 +11,6 @@ metadata:
 spec:
   template:
     spec:
-      hostUsers: false
       securityContext:
         fsGroup: null
       containers:

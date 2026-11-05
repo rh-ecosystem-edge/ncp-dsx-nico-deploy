@@ -10,6 +10,7 @@
 .PHONY: deploy-all-cloud patch-keycloak-route bootstrap-org deploy-all-site status undeploy
 .PHONY: deploy-dataplane-vip verify-prereqs-deployed verify-infra-deployed verify-core-deployed verify-dataplane-vip
 .PHONY: reset-dpu-endpoint
+.PHONY: deploy-dpf-nico-zt
 
 # Upstream source repo (git submodule, read-only)
 UPSTREAM ?= helm/vendor/infra-controller
@@ -705,6 +706,24 @@ endif
 # separately collides on the namespace and the `flow` ServiceAccount.
 
 deploy-all-site: deploy-site-infra vault-init deploy-site
+
+# Coordinated DPF Zero Trust and NICo deployment for one OpenShift site.
+# The wrapper does not clean the cluster or reboot the external host.
+deploy-dpf-nico-zt:
+	@DPF_AUTOMATION_DIR="$(DPF_AUTOMATION_DIR)" \
+		SITE="$(SITE)" \
+		SITE_NAME="$(SITE_NAME)" \
+		NICO_DPU_DEPLOYMENT_NAME="$(NICO_DPU_DEPLOYMENT_NAME)" \
+		HOSTED_CLUSTER_NAME="$(HOSTED_CLUSTER_NAME)" \
+		CLUSTERS_NAMESPACE="$(CLUSTERS_NAMESPACE)" \
+		KUBECONFIG="$(KUBECONFIG)" \
+		HOSTED_KUBECONFIG="$(HOSTED_KUBECONFIG)" \
+		NICO_DPU_AGENT_HOST_LIBRARY_PATH="$(NICO_DPU_AGENT_HOST_LIBRARY_PATH)" \
+		NICO_DPU_AGENT_CHART_SOURCE="$(NICO_DPU_AGENT_CHART_SOURCE)" \
+		NICO_DPU_AGENT_CHART_VERSION="$(NICO_DPU_AGENT_CHART_VERSION)" \
+		STAGE="$(STAGE)" \
+		DRY_RUN="$(DRY_RUN)" \
+		bash hack/deploy-dpf-nico-zt.sh
 
 # Deploy to all configured sites in one command. Define SITES in deploy.env:
 #   SITES=site1 site2 site3

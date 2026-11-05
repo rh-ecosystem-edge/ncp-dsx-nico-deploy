@@ -258,6 +258,13 @@ make status
 make undeploy
 ```
 
+### DPF Zero Trust with NICo
+
+The coordinated OpenShift flow, required DPF/NICo settings, staged resume commands,
+chart prerequisites, and manual reboot gate are documented in
+[docs/dpf-nico-zero-trust-e2e.md](docs/dpf-nico-zero-trust-e2e.md). Preview the
+steps with `make deploy-dpf-nico-zt DRY_RUN=true` before applying them.
+
 ## Data-plane VIPs (MetalLB)
 
 **Optional add-on:** expose NICo's site services on a dedicated provisioning VLAN via MetalLB.

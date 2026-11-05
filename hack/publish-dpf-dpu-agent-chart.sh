@@ -55,6 +55,9 @@ helm package "$CHART_SOURCE" \
   --app-version "$APP_VERSION" \
   --destination "$tmp_dir/repo"
 
+chart_file="$tmp_dir/repo/nico-dpu-agent-${CHART_VERSION}.tgz"
+[[ -s "$chart_file" ]] || fail "packaged chart is missing: $chart_file"
+
 oc -n "$DPF_NAMESPACE" get configmap "$CHART_REPO_CONFIGMAP" -o json > "$tmp_dir/configmap.json"
 python3 - "$tmp_dir/configmap.json" "$tmp_dir/index.yaml" <<'PY'
 import json
@@ -73,8 +76,6 @@ helm repo index "$tmp_dir/repo" \
   --url "$CHART_REPO_URL" \
   --merge "$tmp_dir/index.yaml"
 
-chart_file="$tmp_dir/repo/nico-dpu-agent-${CHART_VERSION}.tgz"
-[[ -s "$chart_file" ]] || fail "packaged chart is missing: $chart_file"
 python3 - "$tmp_dir/configmap.json" "$tmp_dir/repo/index.yaml" "$chart_file" "$CHART_VERSION" \
   > "$tmp_dir/updated-configmap.json" <<'PY'
 import base64
@@ -98,6 +99,47 @@ PY
 if [[ "$DRY_RUN" == true ]]; then
   echo "DRY_RUN=true; would publish nico-dpu-agent $CHART_VERSION to $DPF_NAMESPACE/$CHART_REPO_CONFIGMAP"
   exit 0
+fi
+
+if python3 - "$tmp_dir/configmap.json" "$chart_file" "$CHART_VERSION" "$CHART_REPO_URL" <<'PY'
+import base64
+import io
+import json
+import sys
+import tarfile
+from pathlib import Path
+
+configmap_path, chart_path = map(Path, sys.argv[1:3])
+version, repo_url = sys.argv[3:5]
+configmap = json.loads(configmap_path.read_text())
+existing_chart = configmap.get("binaryData", {}).get(f"nico-dpu-agent-{version}.tgz")
+existing_index = configmap.get("data", {}).get("index.yaml", "")
+
+def chart_files(archive_bytes):
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as archive:
+        return {
+            member.name: archive.extractfile(member).read()
+            for member in archive.getmembers()
+            if member.isfile()
+        }
+
+if existing_chart is None:
+    raise SystemExit(1)
+
+same_chart = chart_files(base64.b64decode(existing_chart)) == chart_files(chart_path.read_bytes())
+if not same_chart:
+    print(f"nico-dpu-agent {version} already exists with different chart content; publish a new chart version", file=sys.stderr)
+    raise SystemExit(2)
+
+indexed = f"nico-dpu-agent-{version}.tgz" in existing_index and repo_url in existing_index
+raise SystemExit(0 if indexed else 1)
+PY
+then
+  echo "nico-dpu-agent $CHART_VERSION is already current; skipping chart repository restart"
+  exit 0
+else
+  publish_status=$?
+  [[ "$publish_status" -ne 2 ]] || fail "chart version $CHART_VERSION is immutable; use a new NICO_DPU_AGENT_CHART_VERSION"
 fi
 
 oc apply -f "$tmp_dir/updated-configmap.json"

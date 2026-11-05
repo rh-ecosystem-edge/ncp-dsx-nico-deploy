@@ -260,10 +260,10 @@ make undeploy
 
 ### DPF Zero Trust with NICo
 
-The coordinated OpenShift flow, required DPF/NICo settings, staged resume commands,
-chart prerequisites, and manual reboot gate are documented in
-[docs/dpf-nico-zero-trust-e2e.md](docs/dpf-nico-zero-trust-e2e.md). Preview the
-steps with `make deploy-dpf-nico-zt DRY_RUN=true` before applying them.
+DPF automation owns DPF and HostedCluster provisioning; this repository deploys
+NICo using its existing site targets. The ownership boundary, environment
+placement, and handoff sequence are documented in
+[docs/dpf-nico-zero-trust-e2e.md](docs/dpf-nico-zero-trust-e2e.md).
 
 ## Data-plane VIPs (MetalLB)
 

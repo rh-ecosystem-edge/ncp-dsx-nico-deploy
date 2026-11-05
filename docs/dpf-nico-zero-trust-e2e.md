@@ -4,12 +4,13 @@ This runbook coordinates the DPF Zero Trust automation with the NICo deployment 
 
 ## Ownership and prerequisites
 
-Use the [DPF NICo integration change](https://github.com/rh-ecosystem-edge/openshift-dpf/pull/510) with `DPF_DEPLOYMENT_MODE=zero-trust` and `NICO_ENABLED=true`. In this mode, DPF installs its platform and HCP prerequisites but leaves NICo-owned DPU inventory and workload resources to NICo. Configure NICo with external DPF enabled and `[dpf].enabled=true`; NICo must create the `DPUDeployment` before DPF creates the HostedCluster. DPF controllers then provision the DPU and reconcile NICo's DPF resources.
+Use the [combined DPF NICo integration](https://github.com/rh-ecosystem-edge/openshift-dpf/pull/510) with `DPF_DEPLOYMENT_MODE=zero-trust` and `NICO_ENABLED=true`. It includes the SNO BFB registry endpoint change from DPF PR #480. In this mode, DPF installs its platform and HCP prerequisites but leaves NICo-owned DPU inventory and workload resources to NICo. NICo requires the [external-DPF mode](https://github.com/dsx-ai-factory/infra-controller/pull/8183) with `NICO_DPF_EXTERNAL=true` and `[dpf].enabled=true`; NICo must create the `DPUDeployment` before DPF creates the HostedCluster. DPF controllers then provision the DPU and reconcile NICo's DPF resources.
 
 Before running the coordinated target, prepare:
 
 - A management-cluster kubeconfig and the HostedCluster name and kubeconfig path.
 - A DPF automation checkout containing the NICo integration change and its required protected `.env` settings, pull secrets, and reachable CoreOS BFB endpoint.
+- The NICo external-DPF change in infra-controller PR #8183. It remains open and has requested changes; do not assume the variable is available in a released NICo build until that change is reviewed and included.
 - NICo cloud and site values, including the site name, matching `DPUDeployment` name, DPU/host BMC inventory, and service image settings.
 - A reachable DPF Helm chart repository with its TLS configuration. The repository and its credentials are site infrastructure; this target does not create them.
 - The RHCOS-compatible `nico-dpu-agent` chart from [infra-controller PR #8798](https://github.com/dsx-ai-factory/infra-controller/pull/8798). Until that change is merged and vendored, set `NICO_DPU_AGENT_CHART_SOURCE` to the chart directory from its branch.
@@ -39,7 +40,7 @@ For recovery, rerun one stage at a time with `STAGE=dpf`, `STAGE=nico`, or `STAG
 
 The DPU-agent chart change is optional and preserves existing defaults. When `lldpSidecar.hostLibraryPath` is set, the chart mounts that host directory read-only at `/host/lib64` and sets `LD_LIBRARY_PATH` for the LLDP sidecar. `/usr/lib64` is the tested path on the lab's RHCOS DPU image; change `NICO_DPU_AGENT_HOST_LIBRARY_PATH` only after verifying the target image's library directory. The DPF integration target publishes the chart to the site's existing chart repository before applying DPU service configuration, then patches the NICo-created `DPUServiceConfiguration` so it also works with NICo API versions that do not propagate `extra_helm_values`.
 
-The chart publisher updates the chart repository ConfigMap and restarts its repository Deployment. It requires the repository, service, TLS material, and permissions to exist already. It is not a replacement for an approved production chart distribution process.
+The chart publisher updates the chart repository ConfigMap and restarts its repository Deployment only when the packaged chart changes. It requires the repository, service, TLS material, and permissions to exist already. It is not a replacement for an approved production chart distribution process.
 
 ## Manual gates and troubleshooting
 

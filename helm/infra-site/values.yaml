@@ -257,6 +257,8 @@ nico-rest-common:
 metallb:
   enabled: false
   namespace: metallb-system
+  # DPF creates the cluster-wide MetalLB resource. Set false when reusing it.
+  createInstance: true
   poolName: nico-dataplane-vip
   addresses: []
   interfaces: []

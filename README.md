@@ -258,6 +258,13 @@ make status
 make undeploy
 ```
 
+### DPF Zero Trust with NICo
+
+DPF automation owns DPF and HostedCluster provisioning; this repository deploys
+NICo using its existing site targets. The ownership boundary, environment
+placement, and handoff sequence are documented in
+[docs/dpf-nico-zero-trust-e2e.md](docs/dpf-nico-zero-trust-e2e.md).
+
 ## Data-plane VIPs (MetalLB)
 
 **Optional add-on:** expose NICo's site services on a dedicated provisioning VLAN via MetalLB.

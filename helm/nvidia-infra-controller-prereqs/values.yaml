@@ -40,6 +40,9 @@ clusterIssuers:
 # provisioning VLAN. Off by default; enable per-site (see helm/values/prereqs-example.yaml).
 metallb:
   enabled: false
+  # Set false when DPF already installed the cluster-wide MetalLB operator.
+  # The wait hook still gates on the MetalLB CRDs when enabled.
+  manageOperator: true
   channel: stable
   source: redhat-operators
   sourceNamespace: openshift-marketplace

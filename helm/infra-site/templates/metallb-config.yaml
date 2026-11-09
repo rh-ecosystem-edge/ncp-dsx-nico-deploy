@@ -15,12 +15,14 @@ interfaces is optional:
 
 {{- if .Values.metallb.enabled }}
 {{- if not .Values.metallb.addresses }}{{- fail "metallb.enabled=true requires metallb.addresses (set it in your infra-site-<site>.yaml override)" }}{{- end }}
+{{- if .Values.metallb.createInstance }}
 apiVersion: metallb.io/v1beta1
 kind: MetalLB
 metadata:
   name: metallb
   namespace: {{ .Values.metallb.namespace }}
 ---
+{{- end }}
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:

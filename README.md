@@ -41,9 +41,9 @@ Requires Helm 4.x: the Kustomize post-renderer
 (`helm/plugins/kustomize-post-renderer/`) is registered as a Helm plugin
 (`helm plugin install`, done automatically by `make check-prereqs`), and its
 `plugin.yaml` uses the `postrenderer/v1` protocol that only Helm 4 can parse.
-A Helm 3.x binary fails to load *any* command once that plugin is installed
-(`unknown field "apiVersion"`) — don't mix Helm 3 and this repo on the same
-machine.
+The Makefile keeps this plugin in a repository-local `HELM_PLUGINS` directory,
+so a Helm 3 binary used by other automation on the same host does not load it.
+Use Helm 4 when running this repository's targets.
 
 ### Optional: bootstrap the cluster
 
@@ -269,10 +269,42 @@ make undeploy
 ```bash
 make new-site SITE=mysite          # auto-create per-site config files
 # edit deploy.env (add DATAPLANE_VIP, DATAPLANE_POOL, DATAPLANE_NIC, DATAPLANE_NODE_IP)
+# set METALLB_MODE=dpf when DPF/HCP already provides MetalLB; otherwise leave the default
 # edit helm/values/nico-core-mysite.yaml (siteConfig, DNS forwarders)
 make patch-ovn-gateway             # one-time, if VIP is on secondary NIC
 make deploy-dataplane-vip          # deploy (idempotent)
 make verify-dataplane-vip          # verify
+```
+
+### DPF hosted-cluster endpoints without MetalLB
+
+For a DPF-managed DPU in a HyperShift hosted cluster where the management
+cluster has no data-plane VIP, deploy the NICo site first, then create
+OpenShift Routes for the DPU agent endpoints:
+
+```bash
+make deploy-site SITE=<configured-site>
+make deploy-dpf-endpoints
+```
+
+The API route uses TLS passthrough and the PXE route permits HTTP because the
+DPU agent fetches its bootstrap CA from `http://carbide-pxe.forge`. Configure
+the DNS resolver used by the hosted cluster to resolve both
+`carbide-api.forge` and `carbide-pxe.forge` to the management cluster's
+reachable default IngressController address. This DNS change is site-owned;
+the make target creates only the routes. Verify the names resolve from a pod
+in the hosted cluster before expecting the DPU agent to register.
+
+For a CoreOS DPU, set the DPF service chart overrides in NICo's site TOML so
+telemetry uses the host's CRI-O socket and DTS writes below CoreOS's writable
+`/var` tree:
+
+```toml
+[dpf.services.otel.extra_helm_values]
+containerdSocket = "/run/crio/crio.sock"
+
+[dpf.services.dts.extra_helm_values]
+hostVolumePrefix = "/var/opt/mellanox/doca/services"
 ```
 
 **Step 4 — Verify in-cluster health:**

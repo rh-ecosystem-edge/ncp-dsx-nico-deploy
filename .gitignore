@@ -21,6 +21,7 @@ node_modules/
 
 # Local per-site deploy config (SITE=..., etc.) — never commit real site values
 deploy.env
+.helm-plugins/
 
 # Per-site Core overlay config — user-local, never commit
 helm/values/nico-core-*.yaml

@@ -1,0 +1,284 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Dedicated nico-pxe image: carbide-pxe binary + all boot blobs baked in.
+# No init container, no separate boot-artifacts image — fully self-contained.
+#
+# Multi-stage build (all RHEL 10 except ipxe-builder which compiles C):
+#   Stage 1  (rhel-builder):          Compiles carbide-pxe + forge-scout from Rust (RHSM)
+#   Stage 1b (rhsm-certs-extractor):  Extracts RHSM certs for mkosi SandboxTrees injection
+#   Stage 2  (mkosi-rhel10-base):     UBI 10 + mkosi v27.1 + systemd-ukify (shared mkosi base)
+#   Stage 3  (qcow-imager-builder):   Builds qcow-imager.efi (RHEL 10 UKI + xfsprogs)
+#   Stage 4  (scout-loader-builder):  Builds scout.efi (RHEL 10 UKI, kernel-6.12.x)
+#   Stage 5  (scout-oss-builder):     Builds scout.squashfs (RHEL 10 rootfs + forge-scout)
+#   Stage 6  (ipxe-builder):          Builds ipxe.efi from NICo-patched iPXE C source
+#   Stage final (ubi-minimal):        carbide-pxe + templates + blobs at /forge-boot-artifacts/
+#
+# Build:
+#   make docker-build-pxe RHSM_ORG_FILE=~/.rhsm_org RHSM_ACTIVATIONKEY_FILE=~/.rhsm_activationkey
+#
+# Deploy:
+#   make docker-push-pxe
+#   make deploy-site E2E=1
+
+# ===========================================================================
+# Stage 1: Build carbide-pxe + forge-scout (RHEL 10 builder)
+# Package carbide-pxe produces binary carbide-pxe.
+# Package carbide-scout produces binary forge-scout.
+# Both built on UBI 10 / glibc 2.39 — binary-compatible with RHEL 10 target images.
+# ===========================================================================
+# hadolint ignore=DL3007
+FROM registry.access.redhat.com/ubi10/ubi:latest AS rhel-builder
+
+RUN --mount=type=secret,id=rhsm_org \
+    --mount=type=secret,id=rhsm_activationkey \
+    rm -f /etc/rhsm-host && \
+    trap 'subscription-manager unregister || true' EXIT && \
+    subscription-manager register \
+      --org="$(cat /run/secrets/rhsm_org)" \
+      --activationkey="$(cat /run/secrets/rhsm_activationkey)" && \
+    subscription-manager repos --enable codeready-builder-for-rhel-10-x86_64-rpms && \
+    dnf install -y --allowerasing \
+        rust-toolset cmake openssl-devel perl-FindBin perl-File-Compare \
+        git clang-devel unzip curl tpm2-tss-devel boost-devel systemd-devel && \
+    curl -1sLf https://dl.cloudsmith.io/public/isc/kea-3-0/cfg/setup/bash.rpm.sh | bash && \
+    dnf install -y isc-kea-devel && \
+    dnf clean all && \
+    rm -rf /etc/pki/entitlement/* /etc/rhsm/ca/*
+
+RUN ln -sf /usr/lib64/libkea-dhcp.so /usr/lib64/libkea-dhcp++.so
+ENV KEA_LIB_PATH="/usr/lib64"
+
+# hadolint ignore=DL4006
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain 1.97.1
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+COPY helm/vendor/infra-controller /workspace
+WORKDIR /workspace
+RUN rm -f rust-toolchain.toml
+
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/workspace/target \
+    cargo build --release -p carbide-pxe -p carbide-scout && \
+    cp target/release/carbide /carbide-pxe && \
+    cp target/release/forge-scout /forge-scout
+
+# ===========================================================================
+# Stage 1b: Extract RHSM subscription certificates for mkosi SandboxTrees.
+# mkosi's Distribution=rhel needs RHSM certs to reach subscription repos
+# (kernel-core, systemd-boot, etc.). Certs are copied at build time; the
+# container image layer itself does not retain active subscriptions.
+# ===========================================================================
+# hadolint ignore=DL3007
+FROM registry.access.redhat.com/ubi10/ubi:latest AS rhsm-certs-extractor
+
+RUN --mount=type=secret,id=rhsm_org \
+    --mount=type=secret,id=rhsm_activationkey \
+    rm -f /etc/rhsm-host && \
+    trap 'subscription-manager unregister || true' EXIT && \
+    subscription-manager register \
+      --org="$(cat /run/secrets/rhsm_org)" \
+      --activationkey="$(cat /run/secrets/rhsm_activationkey)" && \
+    mkdir -p /rhsm-certs/etc /rhsm-certs/etc/pki && \
+    cp -a /etc/rhsm /rhsm-certs/etc/ && \
+    cp -a /etc/pki/entitlement /rhsm-certs/etc/pki/ && \
+    rm -rf /etc/pki/entitlement/* /etc/rhsm/ca/*
+
+# ===========================================================================
+# Stage 2: Shared mkosi base for all RHEL 10 boot artifact builds.
+# systemd-ukify is a HOST tool — mkosi invokes it to assemble UKI EFI files.
+# python3-pefile (PE parser used by mkosi/ukify) is installed via pip because
+# it is not packaged in RHEL/UBI repos.
+# rpm + dnf are pre-installed on UBI 10; mkosi uses them for Distribution=rhel.
+# ===========================================================================
+# hadolint ignore=DL3007
+FROM registry.access.redhat.com/ubi10/ubi:latest AS mkosi-rhel10-base
+
+RUN --mount=type=secret,id=rhsm_org \
+    --mount=type=secret,id=rhsm_activationkey \
+    rm -f /etc/rhsm-host && \
+    trap 'subscription-manager unregister || true' EXIT && \
+    subscription-manager register \
+      --org="$(cat /run/secrets/rhsm_org)" \
+      --activationkey="$(cat /run/secrets/rhsm_activationkey)" && \
+    dnf install -y python3 python3-pip git ca-certificates systemd-ukify systemd-boot systemd-udev openssl cpio zstd kmod && \
+    pip3 install --no-cache-dir pefile && \
+    dnf clean all && \
+    rm -rf /etc/pki/entitlement/* /etc/rhsm/ca/* && \
+    mkdir -p /usr/share/distribution-gpg-keys/redhat && \
+    cp /etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release \
+       /usr/share/distribution-gpg-keys/redhat/RPM-GPG-KEY-redhat10-release && \
+    git clone --depth 1 --branch v27.1 \
+      https://github.com/systemd/mkosi.git /usr/local/lib/mkosi && \
+    ln -s /usr/local/lib/mkosi/bin/mkosi /usr/local/bin/mkosi && \
+    printf '#!/bin/sh\nexec /usr/bin/dnf --nogpgcheck "$@"\n' \
+        > /usr/local/bin/mkosi-dnf5 && \
+    chmod +x /usr/local/bin/mkosi-dnf5
+
+COPY helm/vendor/infra-controller/pxe /workspace/pxe
+WORKDIR /workspace
+
+# Build a SandboxTrees-compatible GPG key tree so mkosi can find the key
+# inside its dnf sandbox (dnf resolves file:// gpgkey= URIs inside the sandbox).
+# Key name must match what mkosi expects: RPM-GPG-KEY-redhat{major}-release.
+COPY hack/pxe-rhel10/pkgmngr-config /workspace/pxe/mkosi.profiles/pkgmngr-config
+
+RUN mkdir -p /workspace/pxe/mkosi.profiles/gpg-keys/usr/share/distribution-gpg-keys/redhat \
+           /workspace/pxe/mkosi.profiles/gpg-keys/usr/share/distribution-gpg-keys/epel && \
+    cp /etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release \
+       /workspace/pxe/mkosi.profiles/gpg-keys/usr/share/distribution-gpg-keys/redhat/RPM-GPG-KEY-redhat10-release && \
+    curl -fsSL https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-10 \
+         -o /workspace/pxe/mkosi.profiles/gpg-keys/usr/share/distribution-gpg-keys/epel/RPM-GPG-KEY-EPEL-10
+
+# ===========================================================================
+# Stage 3: qcow-imager.efi (RHEL 10 UKI — disk imaging tool)
+# disk_imaging.sh runs inside this UKI to download + write QCOW2 images.
+# xfsprogs included so the initrd contains xfs.ko (needed to mount RHEL XFS root).
+# ===========================================================================
+FROM mkosi-rhel10-base AS qcow-imager-builder
+
+COPY hack/pxe-rhel10/mkosi.profiles/qcow-imager-rhel10-x86_64 \
+     /workspace/pxe/mkosi.profiles/qcow-imager-rhel10-x86_64
+
+RUN --mount=type=secret,id=rhsm_org \
+    --mount=type=secret,id=rhsm_activationkey \
+    rm -f /etc/rhsm-host && \
+    trap 'subscription-manager unregister || true' EXIT && \
+    subscription-manager register \
+      --org="$(cat /run/secrets/rhsm_org)" \
+      --activationkey="$(cat /run/secrets/rhsm_activationkey)" && \
+    mkdir -p /workspace/pxe/mkosi.profiles/rhsm-certs/etc \
+             /workspace/pxe/mkosi.profiles/rhsm-certs/etc/pki && \
+    cp -a /etc/rhsm /workspace/pxe/mkosi.profiles/rhsm-certs/etc/ && \
+    cp -a /etc/pki/entitlement /workspace/pxe/mkosi.profiles/rhsm-certs/etc/pki/ && \
+    mkdir -p /workspace/pxe/mkosi.profiles/qcow-imager-rhel10-x86_64/mkosi.extra/opt/forge && \
+    cp pxe/common_files/disk_imaging.sh \
+       pxe/mkosi.profiles/qcow-imager-rhel10-x86_64/mkosi.extra/opt/forge/disk_imaging.sh && \
+    mkdir -p /tmp/mkosi-out /tmp/mkosi-cache && \
+    cd pxe && PATH="$PATH:/sbin" \
+    mkosi --profile qcow-imager-rhel10-x86_64 \
+          --output-dir /tmp/mkosi-out \
+          --package-cache-directory /tmp/mkosi-cache \
+          build && \
+    cp /tmp/mkosi-out/qcow-imager.efi /qcow-imager.efi && \
+    rm -rf /etc/pki/entitlement/* /etc/rhsm/ca/*
+
+# ===========================================================================
+# Stage 4: scout.efi (RHEL 10 UKI — scout-rhel10-loader-x86_64)
+# ===========================================================================
+FROM mkosi-rhel10-base AS scout-loader-builder
+
+COPY hack/pxe-rhel10/mkosi.profiles/scout-rhel10-loader-x86_64 \
+     /workspace/pxe/mkosi.profiles/scout-rhel10-loader-x86_64
+
+RUN --mount=type=secret,id=rhsm_org \
+    --mount=type=secret,id=rhsm_activationkey \
+    rm -f /etc/rhsm-host && \
+    trap 'subscription-manager unregister || true' EXIT && \
+    subscription-manager register \
+      --org="$(cat /run/secrets/rhsm_org)" \
+      --activationkey="$(cat /run/secrets/rhsm_activationkey)" && \
+    mkdir -p /workspace/pxe/mkosi.profiles/rhsm-certs/etc \
+             /workspace/pxe/mkosi.profiles/rhsm-certs/etc/pki && \
+    cp -a /etc/rhsm /workspace/pxe/mkosi.profiles/rhsm-certs/etc/ && \
+    cp -a /etc/pki/entitlement /workspace/pxe/mkosi.profiles/rhsm-certs/etc/pki/ && \
+    mkdir -p /tmp/mkosi-out /tmp/mkosi-cache && \
+    cd pxe && PATH="$PATH:/sbin" \
+    mkosi --profile scout-rhel10-loader-x86_64 \
+          --output-dir /tmp/mkosi-out \
+          --package-cache-directory /tmp/mkosi-cache \
+          build && \
+    cp /tmp/mkosi-out/loader.efi /scout.efi && \
+    rm -rf /etc/pki/entitlement/* /etc/rhsm/ca/*
+
+# ===========================================================================
+# Stage 5: scout.squashfs (RHEL 10 rootfs — scout-rhel10-oss-x86_64)
+# forge-scout binary injected from rhel-builder (same glibc 2.39).
+# ===========================================================================
+FROM mkosi-rhel10-base AS scout-oss-builder
+ARG SCOUT_OSS_CACHE_BUST=1
+
+COPY hack/pxe-rhel10/mkosi.profiles/scout-rhel10-oss-x86_64 \
+     /workspace/pxe/mkosi.profiles/scout-rhel10-oss-x86_64
+COPY --from=rhel-builder /forge-scout \
+     /workspace/pxe/mkosi.profiles/scout-rhel10-oss-x86_64/mkosi.extra/opt/forge/forge-scout
+
+RUN --mount=type=secret,id=rhsm_org \
+    --mount=type=secret,id=rhsm_activationkey \
+    rm -f /etc/rhsm-host && \
+    trap 'subscription-manager unregister || true' EXIT && \
+    subscription-manager register \
+      --org="$(cat /run/secrets/rhsm_org)" \
+      --activationkey="$(cat /run/secrets/rhsm_activationkey)" && \
+    mkdir -p /workspace/pxe/mkosi.profiles/rhsm-certs/etc \
+             /workspace/pxe/mkosi.profiles/rhsm-certs/etc/pki && \
+    cp -a /etc/rhsm /workspace/pxe/mkosi.profiles/rhsm-certs/etc/ && \
+    cp -a /etc/pki/entitlement /workspace/pxe/mkosi.profiles/rhsm-certs/etc/pki/ && \
+    dnf install -y squashfs-tools && \
+    mkdir -p /tmp/mkosi-out /tmp/mkosi-cache && \
+    cd pxe && PATH="$PATH:/sbin" \
+    mkosi --profile scout-rhel10-oss-x86_64 \
+          --output-dir /tmp/mkosi-out \
+          --package-cache-directory /tmp/mkosi-cache \
+          -E PKG_VERSION=dev \
+          build && \
+    mkdir -p /tmp/scout-extract && \
+    cd /tmp/scout-extract && \
+    zstd -d "$(readlink -f /tmp/mkosi-out/scout)" -c | cpio -id --quiet && \
+    mksquashfs /tmp/scout-extract /scout.squashfs -comp zstd -noappend -quiet && \
+    rm -rf /tmp/scout-extract && \
+    rm -rf /etc/pki/entitlement/* /etc/rhsm/ca/*
+
+# ===========================================================================
+# Stage 6: ipxe.efi (NICo-patched iPXE — C source compilation)
+# Ubuntu 24.04 used here only because iPXE's build toolchain targets Debian.
+# ===========================================================================
+FROM ubuntu:24.04 AS ipxe-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential gcc binutils liblzma-dev isolinux mtools xorriso \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY helm/vendor/infra-controller/pxe/ipxe /workspace/ipxe
+WORKDIR /workspace
+
+RUN mkdir -p ipxe/upstream/src/config/local && \
+    cp ipxe/local/*.h ipxe/upstream/src/config/local/ && \
+    cd ipxe/upstream/src && \
+    make bin-x86_64-efi/ipxe.efi EMBED=../../local/embed.ipxe && \
+    cp bin-x86_64-efi/ipxe.efi /ipxe.efi
+
+# ===========================================================================
+# Final: nico-pxe — minimal runtime image with carbide-pxe + all blobs
+# ===========================================================================
+# hadolint ignore=DL3007
+FROM registry.access.redhat.com/ubi10/ubi-minimal:latest
+
+RUN --mount=type=secret,id=rhsm_org \
+    --mount=type=secret,id=rhsm_activationkey \
+    rm -f /etc/rhsm-host && \
+    microdnf install -y --disablerepo='rhel-*' subscription-manager && \
+    trap 'subscription-manager unregister || true' EXIT && \
+    subscription-manager register \
+      --org="$(cat /run/secrets/rhsm_org)" \
+      --activationkey="$(cat /run/secrets/rhsm_activationkey)" && \
+    microdnf install -y curl && \
+    microdnf clean all && \
+    rm -rf /etc/pki/entitlement/* /etc/rhsm/ca/*
+
+COPY --from=rhel-builder /carbide-pxe /opt/nico/nico
+COPY --from=rhel-builder /workspace/pxe/templates/ /opt/nico/pxe/templates/
+COPY --from=rhel-builder /workspace/pxe/scout-firmware-scripts/ /opt/nico/scout-firmware-scripts/
+
+RUN mkdir -p /forge-boot-artifacts/blobs/internal/x86_64
+
+COPY --from=ipxe-builder       /ipxe.efi        /forge-boot-artifacts/blobs/internal/x86_64/ipxe.efi
+COPY --from=qcow-imager-builder /qcow-imager.efi /forge-boot-artifacts/blobs/internal/x86_64/qcow-imager.efi
+COPY --from=scout-loader-builder /scout.efi      /forge-boot-artifacts/blobs/internal/x86_64/scout.efi
+COPY --from=scout-oss-builder    /scout.squashfs /forge-boot-artifacts/blobs/internal/x86_64/scout.squashfs
+
+LABEL name="nico-pxe"
+
+EXPOSE 8080
+ENTRYPOINT ["/opt/nico/nico"]

@@ -1,0 +1,6 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Runs BEFORE configure_initrd — only enable the service; do NOT remove kernel here.
+
+systemctl enable scout-loader.service

@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Thin wrapper to run nicocli (the NICo REST API CLI) without typing long
+# `podman run ...` lines. Handles OIDC client-credentials auth automatically.
+#
+# Auth is via the ncx-service M2M OIDC client. The client secret is resolved
+# in priority order:
+#   1. NICO_CLIENT_SECRET env var (set by the caller)
+#   2. Keycloak ncx-service client secret fetched via the Keycloak admin API
+#      (requires KUBECONFIG / oc access to the keycloak-admin-secret in
+#       rhbk-operator namespace)
+#
+# Usage:
+#   hack/nicocli machine list
+#   hack/nicocli operating-system create --name rhcos-worker ...
+#   NICO_CLIENT_SECRET=<secret> hack/nicocli instance list
+#
+# Env knobs (all optional — defaults target the e2e SNO cluster):
+#   NICOCLI_IMAGE        image ref (default quay.io/fdupont-redhat/nicocli:latest)
+#   NICO_BASE_URL        REST API base URL
+#   NICO_ORG             org name (default: ncx)
+#   NICO_TOKEN_URL       OIDC token endpoint (derived from NICO_KC_URL + realm)
+#   NICO_CLIENT_ID       OIDC client ID (default: ncx-service)
+#   NICO_CLIENT_SECRET   OIDC client secret (auto-fetched from cluster if unset)
+#   NICO_KC_URL          Keycloak base URL (used to derive NICO_TOKEN_URL and
+#                        to auto-fetch the client secret; default auto-detected
+#                        from oc if KUBECONFIG is set)
+#   NICO_KC_REALM        Keycloak realm (default: nico)
+#   NICOCLI_CA_CERT      path to the root CA cert for TLS verification
+#                        (default ~/.config/nico/nico-root-ca.crt)
+set -euo pipefail
+
+IMAGE="${NICOCLI_IMAGE:-quay.io/fdupont-redhat/nicocli:latest}"
+ORG="${NICO_ORG:-ncx}"
+CLIENT_ID="${NICO_CLIENT_ID:-ncx-service}"
+KC_REALM="${NICO_KC_REALM:-nico}"
+
+# ---------------------------------------------------------------------------
+# Auto-detect Keycloak URL from the cluster if not set
+# ---------------------------------------------------------------------------
+if [[ -z "${NICO_KC_URL:-}" ]] && command -v oc &>/dev/null && [[ -n "${KUBECONFIG:-}" ]]; then
+  CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster \
+    -o jsonpath='{.spec.domain}' 2>/dev/null || true)
+  if [[ -n "$CLUSTER_DOMAIN" ]]; then
+    NICO_KC_URL="https://keycloak-rhbk-operator.${CLUSTER_DOMAIN}"
+  fi
+fi
+
+if [[ -z "${NICO_KC_URL:-}" ]]; then
+  echo "nicocli: set NICO_KC_URL (Keycloak base URL) or KUBECONFIG to auto-detect" >&2
+  exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# Auto-detect REST API URL from the cluster if not set
+# ---------------------------------------------------------------------------
+if [[ -z "${NICO_BASE_URL:-}" ]] && command -v oc &>/dev/null && [[ -n "${KUBECONFIG:-}" ]]; then
+  CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster \
+    -o jsonpath='{.spec.domain}' 2>/dev/null || true)
+  if [[ -n "$CLUSTER_DOMAIN" ]]; then
+    NICO_BASE_URL="https://nico-rest-api-nico-rest.${CLUSTER_DOMAIN}"
+  fi
+fi
+
+if [[ -z "${NICO_BASE_URL:-}" ]]; then
+  echo "nicocli: set NICO_BASE_URL (REST API base URL) or KUBECONFIG to auto-detect" >&2
+  exit 2
+fi
+
+TOKEN_URL="${NICO_TOKEN_URL:-${NICO_KC_URL}/realms/${KC_REALM}/protocol/openid-connect/token}"
+
+# ---------------------------------------------------------------------------
+# TLS options for curl calls to the Keycloak admin API. Keycloak is served
+# through the OCP router, whose CA is saved at ocp-ingress-ca.crt.
+# Use --cacert if available; fall back to -k (insecure) if the CA cert has
+# not been fetched yet (first bootstrap run on a new cluster).
+# Save once: oc get secret router-ca -n openshift-ingress-operator \
+#   -o jsonpath='{.data.tls\.crt}' | base64 -d > ~/.config/nico/ocp-ingress-ca.crt
+CA_CERT="${NICOCLI_CA_CERT:-${HOME}/.config/nico/ocp-ingress-ca.crt}"
+if [[ -r "${CA_CERT}" ]]; then
+  _CURL_TLS=(--cacert "${CA_CERT}")
+else
+  _CURL_TLS=(-k)
+fi
+
+# ---------------------------------------------------------------------------
+# Auto-fetch client secret from the Keycloak admin API if not provided
+# ---------------------------------------------------------------------------
+if [[ -z "${NICO_CLIENT_SECRET:-}" ]]; then
+  if ! command -v oc &>/dev/null || [[ -z "${KUBECONFIG:-}" ]]; then
+    echo "nicocli: set NICO_CLIENT_SECRET or ensure KUBECONFIG + oc are available" >&2
+    exit 2
+  fi
+  _ADMIN_USER=$(oc get secret keycloak-admin-secret -n rhbk-operator \
+    -o jsonpath='{.data.username}' | base64 -d)
+  _ADMIN_PASS=$(oc get secret keycloak-admin-secret -n rhbk-operator \
+    -o jsonpath='{.data.password}' | base64 -d)
+  # Use --data-urlencode to handle special characters (+, /, =) in credentials.
+  _ADMIN_TOKEN=$(curl -sS "${_CURL_TLS[@]}" -X POST \
+    "${NICO_KC_URL}/realms/master/protocol/openid-connect/token" \
+    --data-urlencode "grant_type=password" \
+    --data-urlencode "client_id=admin-cli" \
+    --data-urlencode "username=${_ADMIN_USER}" \
+    --data-urlencode "password=${_ADMIN_PASS}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+  _CLIENT_UUID=$(curl -sS "${_CURL_TLS[@]}" \
+    -H "Authorization: Bearer ${_ADMIN_TOKEN}" \
+    "${NICO_KC_URL}/admin/realms/${KC_REALM}/clients?clientId=${CLIENT_ID}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+  NICO_CLIENT_SECRET=$(curl -sS "${_CURL_TLS[@]}" \
+    -H "Authorization: Bearer ${_ADMIN_TOKEN}" \
+    "${NICO_KC_URL}/admin/realms/${KC_REALM}/clients/${_CLIENT_UUID}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
+fi
+
+# ---------------------------------------------------------------------------
+# Fetch a Bearer token via client_credentials (nicocli needs NICO_TOKEN
+# or a saved login session; the OIDC env vars alone don't auto-trigger the
+# client_credentials flow on first run without a config file).
+# ---------------------------------------------------------------------------
+NICO_TOKEN=$(curl -sS "${_CURL_TLS[@]}" -X POST "${TOKEN_URL}" \
+  --data-urlencode "grant_type=client_credentials" \
+  --data-urlencode "client_id=${CLIENT_ID}" \
+  --data-urlencode "client_secret=${NICO_CLIENT_SECRET}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+if [[ -z "${NICO_TOKEN}" || "${NICO_TOKEN}" == "null" ]]; then
+  echo "nicocli: failed to obtain Bearer token from ${TOKEN_URL}" >&2
+  exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# TLS: mount the OCP ingress CA so nicocli can verify the REST API cert.
+# Go uses SSL_CERT_FILE / SSL_CERT_DIR; mount the cert and point the var at
+# it so the standard x509 pool picks it up without modifying the image.
+# CA_CERT is already resolved above (used for Keycloak admin API calls too).
+# ---------------------------------------------------------------------------
+CA_MOUNT=()
+CA_ENV=()
+if [[ -r "${CA_CERT}" ]]; then
+  CA_MOUNT=(-v "${CA_CERT}:/etc/nico-ca.crt:ro,Z")
+  CA_ENV=(-e "SSL_CERT_FILE=/etc/nico-ca.crt")
+fi
+
+exec podman run --rm -i \
+  "${CA_MOUNT[@]}" \
+  "${CA_ENV[@]}" \
+  -e "NICO_BASE_URL=${NICO_BASE_URL}" \
+  -e "NICO_ORG=${ORG}" \
+  -e "NICO_TOKEN=${NICO_TOKEN}" \
+  "$IMAGE" "$@"

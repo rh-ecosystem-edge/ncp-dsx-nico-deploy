@@ -1,8 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Remap unbound container ports from 53 to 5353 so the pod can run without
-# CAP_NET_BIND_SERVICE. External MetalLB Services still expose port 53.
+# The unbound subchart hardcodes containerPort 53 (and tcpSocket probes on 53),
+# but our nico-unbound image binds an UNPRIVILEGED 5353 so the pod runs as a
+# plain arbitrary OpenShift UID under restricted-v2 (no CAP_NET_BIND_SERVICE, no
+# custom SCC) — the same posture nico-dns uses (see fix-dns-service-port.yaml).
+# The subchart's Services target the container ports by NAME (dns-udp/dns-tcp)
+# and keep port 53 for clients, so retargeting only the named containerPorts here
+# is enough — no Service patch is needed. JSON patch (not strategic merge) so the
+# port numbers are replaced in place, not appended. Container index 0 is unbound
+# (the metrics sidecar is disabled via unbound.exporter.enabled=false).
 - op: replace
   path: /spec/template/spec/containers/0/ports/0/containerPort
   value: 5353

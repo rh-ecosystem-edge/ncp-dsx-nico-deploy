@@ -6,11 +6,17 @@
 # Usage: make deploy-site-infra SITE_INFRA_VALUES=helm/values/infra-site-<site>.yaml
 metallb:
   enabled: true
+  # For a DPF/HCP cluster, use namespace: openshift-operators.
   # Range (not a single /32): one LB IP per service — see nico-core-example.yaml.
-  addresses:
-    - 10.0.0.100-10.0.0.110
-  interfaces:
-    - <dataplane-nic>      # e.g. ens1f0 — the node NIC on the provisioning VLAN
+  mode: l2
+  addressPools:
+    - name: nico-dataplane-vip
+      addresses:
+        - 10.0.0.100-10.0.0.110
+      autoAssign: false
+  l2:
+    interfaces:
+      - <dataplane-nic>      # e.g. ens1f0 — the node NIC on the provisioning VLAN
 
 nodeNetwork:
   enabled: true

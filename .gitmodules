@@ -1,3 +1,7 @@
 [submodule "helm/vendor/infra-controller"]
 	path = helm/vendor/infra-controller
-	url = https://github.com/NVIDIA/infra-controller
+	url = https://github.com/rh-ecosystem-edge/infra-controller.git
+	branch = next
+[submodule "helm/vendor/nv-rms"]
+	path = helm/vendor/nv-rms
+	url = https://github.com/fabiendupont/nv-rms

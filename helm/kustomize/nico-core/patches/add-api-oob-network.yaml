@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Attach nico-api to the nico-bmc OVN CUDN (192.168.2.0/24) so the
+# site-explorer can reach BMC endpoints (vbmc-rs) directly on the BMC
+# segment without a proxy. The upstream core chart has no mechanism for
+# secondary network attachments; this patch adds the Multus annotation.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nico-api
+  namespace: nico-system
+spec:
+  template:
+    metadata:
+      annotations:
+        k8s.v1.cni.cncf.io/networks: '[{"name":"nico-bmc","namespace":"nico-system"}]'

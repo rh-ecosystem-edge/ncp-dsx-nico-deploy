@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# This directory is populated at Docker build time by the rhsm-certs-extractor
+# stage in Dockerfile.nico-pxe. It contains RHEL subscription certificates
+# that mkosi injects into the build sandbox via SandboxTrees= so that
+# Distribution=rhel profiles can reach RHEL subscription repositories
+# (kernel-core, systemd-boot, etc.) during the image build.
+#
+# Contents at build time:
+#   etc/rhsm/           - RHSM configuration
+#   etc/pki/entitlement/ - subscription entitlement certificates
+#
+# Never commit actual RHSM certificates here. The directory exists in git only
+# to anchor the SandboxTrees= path referenced in mkosi.conf profiles.

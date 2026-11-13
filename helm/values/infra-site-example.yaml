@@ -6,6 +6,8 @@
 # Usage: make deploy-site-infra SITE_INFRA_VALUES=helm/values/infra-site-<site>.yaml
 metallb:
   enabled: true
+  # For a DPF/HCP cluster, use namespace: openshift-operators and set
+  # createInstance: false to reuse DPF's MetalLB instance.
   # Range (not a single /32): one LB IP per service — see nico-core-example.yaml.
   addresses:
     - 10.0.0.100-10.0.0.110

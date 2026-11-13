@@ -28,7 +28,7 @@ RUN --mount=type=cache,target=/root/go/pkg/mod   \
     go build \
         -ldflags "-extldflags '-static' -w -s" \
         -o /app/sitemgr \
-        ./cmd/sitemgr
+        ./cmd/site-manager
 
 # Runtime stage
 # hadolint ignore=DL3007

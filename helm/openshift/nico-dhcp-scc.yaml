@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Custom SecurityContextConstraints for nico-dhcp (Kea).
+#
+# Why this exists (the one NICo Core service that cannot run on restricted-v2):
+# a DHCP server MUST bind UDP port 67 (privileged, <1024). Under restricted-v2
+# the pod runs as a non-root range UID with all capabilities dropped and
+# no_new_privs=1, so NET_BIND_SERVICE can never become *effective* (it lands in
+# CapBnd only) and kea logs DHCPSRV_OPEN_SOCKET_FAIL / DHCPSRV_NO_SOCKETS_OPEN
+# — a zombie server. Empirically confirmed on OCP 4.22 (uid 1000820000,
+# CapEff=0, NoNewPrivs=1). DHCP cannot dodge this by moving ports the way
+# nico-dns did (53 -> 5353).
+#
+# This SCC grants exactly one capability — NET_BIND_SERVICE — and allows
+# RunAsAny so nico-dhcp can run as uid 0. Root is required to make the cap
+# EFFECTIVE: on modern CRI-O (post CVE-2022-27652) an added capability is no
+# longer promoted to the ambient set, so a non-root process would get it only
+# in CapBnd, never CapEff, and the bind would still fail (verified on OCP 4.22:
+# uid 1001 => CapEff=0; uid 0 => CapEff=NET_BIND_SERVICE). The pod therefore
+# runs as uid 0 with every other capability dropped (see the containerSecurity
+# Context override in helm/values/nico-core-e2e.yaml). A cleaner non-root
+# posture is possible via file capabilities on the kea binary in the image
+# (setcap cap_net_bind_service=ep) plus this same SCC; that needs an image
+# rebuild and is tracked separately. Everything else stays as tight as
+# restricted-v2 (drop ALL, no host access, SELinux MustRunAs).
+#
+# This is PRODUCTION-GENERAL: even the upstream relay+MetalLB-VIP model needs
+# kea to bind UDP/67, so any OpenShift NICo site needs this SCC. It is not an
+# e2e-only artifact. In the e2e the DHCP relay runs OFF-cluster on the FRR ToR
+# (nico-tor libvirt VM), so no in-cluster relay SCC is needed; kea is reached
+# over its MetalLB VIP exactly as in production.
+#
+# Applied by `make deploy-site E2E=1` (see Makefile). Bound to the SA the
+# nico-dhcp chart already creates (nico-dhcp in nico-system).
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: nico-dhcp
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: false
+allowHostPorts: false
+allowedCapabilities:
+  - NET_BIND_SERVICE
+requiredDropCapabilities:
+  - ALL
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: MustRunAs
+fsGroup:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+readOnlyRootFilesystem: false
+volumes:
+  - configMap
+  - downwardAPI
+  - emptyDir
+  - projected
+  - secret
+users:
+  - system:serviceaccount:nico-system:nico-dhcp

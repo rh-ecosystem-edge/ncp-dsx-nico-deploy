@@ -1,0 +1,112 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Libvirt-based e2e test environment: the NICo management cluster (SNO) and
+# the managed machines are all libvirt VMs. vbmc-rs provides virtual Redfish
+# BMCs so NICo can discover, provision, and lifecycle-manage the VMs exactly
+# as it would real bare metal.
+# See docs/e2e-libvirt-openshift.md for the full runbook.
+#
+# Usage:
+#   make deploy-e2e-net          Set up SNO node networking (NMState, NNCP, CUDN)
+#   make docker-build-pxe ...    Build the RHEL 10 Scout nico-pxe image
+
+.PHONY: deploy-e2e-net docker-build-pxe docker-push-pxe
+
+# =============================================================================
+# E2E Variables
+# =============================================================================
+
+# E2E overlay (NICo + KubeVirt + vbmc-rs + Metal3, see docs/e2e-libvirt-openshift.md).
+# ADDITIVE on top of the site profile (unlike MAT, which swaps it): stands up the
+# node-as-fabric provisioning L2 + a hostNetwork DHCP relay so kea receives
+# relayed unicast and its libdhcp hook allocates from the real segment, plus a
+# blank-disk KubeVirt worker VM to be netbooted. nico-dhcp itself stays pristine
+# upstream; the nico-dhcp SCC (port-67 bind) is production-general and applied
+# unconditionally. Opt in with `make deploy-site E2E=1`; off by default so a
+# normal site deploy is unaffected.
+E2E_VALUES := helm/values/nico-core-e2e.yaml
+E2E ?=
+E2E_CONFIG_FLAG := $(if $(E2E),-f $(E2E_VALUES),)
+# When E2E=1, inject the nico-admin-ca public cert into nico-api's admin client
+# trust store (adminRootCertPem → admin_root_cafile_path). Without this the
+# nico-admin-cli gets BadCertificate on every call. The cert is extracted at
+# make-time from the cluster; the Makefile silently skips if the secret doesn't
+# exist yet (first deploy before vault-init).
+_ADMIN_CA_CERT := $(shell oc get secret nico-admin-ca-secret -n nico-system \
+  -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d > /tmp/nico-admin-ca.crt 2>/dev/null; \
+  [ -s /tmp/nico-admin-ca.crt ] && echo /tmp/nico-admin-ca.crt || true)
+E2E_ADMIN_ROOT_FLAG := $(if $(and $(E2E),$(_ADMIN_CA_CERT)),--set-file nico-api.siteConfig.adminRootCertPem=$(_ADMIN_CA_CERT),)
+
+# E2E provisioning fabric manifests. Production-faithful model: the nmstate
+# operator + a node L2 UPLINK bridge (nicoprov0, no node IP) that cables the
+# nested worker VM to the external FRR ToR (nico-tor libvirt VM). The ToR owns the
+# provisioning gateway (.253.1) and runs the DHCP relay; the worker reaches the
+# nico-dhcp / nico-pxe MetalLB VIPs through the ToR (BGP /32). No node-local relay
+# or boot-proxy — the return-path spike proved OVN DNATs VIP traffic arriving on
+# br-ex once the node default gateway is the ToR (see CLAUDE.md "Networking /
+# MetalLB").
+E2E_NMSTATE := helm/openshift/e2e-nmstate-operator.yaml
+E2E_PROV_NET := helm/openshift/e2e-provisioning-net.yaml
+# Repoints the node default gateway to the FRR ToR so OVN's gateway router returns
+# VIP/provisioning traffic to foreign subnets symmetrically (the load-bearing
+# return-path step; see the manifest header + CLAUDE.md "Networking / MetalLB").
+E2E_DEFAULT_GW := helm/openshift/e2e-node-default-gw.yaml
+# Linux bridge (machine-net0) over the SNO VM's third NIC (enp3s0) so the worker
+# libvirt VM's management NIC gets a 192.168.130.0/24 address from the libvirt dnsmasq.
+E2E_MACHINE_NET := helm/openshift/e2e-machine-net.yaml
+# OVN ClusterUserDefinedNetwork for the BMC segment (192.168.2.0/24). Required by
+# vbmc-rs (host systemd service) and nico-bmc-proxy.
+E2E_CUDN_BMC := helm/openshift/e2e-cudn-bmc.yaml
+
+# =============================================================================
+# E2E Targets
+# =============================================================================
+
+# E2E-only provisioning fabric. Production-faithful: the provisioning segment is a
+# real external L2 owned by the FRR ToR (nico-tor libvirt VM), which owns the
+# gateway (.253.1) and relays DHCP. Installs the kubernetes-nmstate operator, then
+# creates a node L2 UPLINK bridge (nicoprov0, NO node IP) whose only port is the
+# SNO's second NIC (enp2s0 -> nico-prov libvirt net -> ToR). The libvirt managed
+# machine VMs connect to the ToR via the libvirt network (not via the SNO node).
+# See helm/openshift/e2e-*.yaml and docs/e2e-libvirt-openshift.md.
+deploy-e2e-net:
+	# The NMState CR needs the operator's CRD; apply the manifest, wait for the
+	# CRD, then apply again so the NMState CR registers.
+	oc apply -f $(E2E_NMSTATE) || true
+	@echo "Waiting for the NMState CRD..."
+	@for i in $$(seq 1 60); do oc get crd nmstates.nmstate.io >/dev/null 2>&1 && break; sleep 5; done
+	oc apply -f $(E2E_NMSTATE)
+	@echo "Waiting for the nmstate handler DaemonSet..."
+	@for i in $$(seq 1 60); do oc get ds/nmstate-handler -n openshift-nmstate >/dev/null 2>&1 && break; sleep 5; done
+	oc rollout status ds/nmstate-handler -n openshift-nmstate --timeout=300s
+	oc apply -f $(E2E_PROV_NET)
+	oc wait nncp/nicoprov0 --for=condition=Available --timeout=300s
+	# machine-net0 bridge (enp3s0) for the SNO node's management network access.
+	oc apply -f $(E2E_MACHINE_NET)
+	oc wait nncp/machine-net0 --for=condition=Available --timeout=300s
+	# Repoint the node default gateway to the FRR ToR (load-bearing return path).
+	oc apply -f $(E2E_DEFAULT_GW)
+	oc wait nncp/node-default-gw-tor --for=condition=Available --timeout=300s
+	# OVN derives GR_<node>'s default next-hop at gateway-init and does not re-read
+	# the runtime route change above; restart ovnkube-node once so GR_<node>
+	# reconverges 0.0.0.0/0 -> the ToR. Idempotent (no-op if already converged).
+	oc rollout restart ds/ovnkube-node -n openshift-ovn-kubernetes
+	oc rollout status ds/ovnkube-node -n openshift-ovn-kubernetes --timeout=300s
+	# BMC CUDN (OVN Layer2, 192.168.2.0/24) — required for vbmc-rs (host service)
+	# and nico-bmc-proxy to reach the BMC segment from within the cluster.
+	oc apply -f $(E2E_CUDN_BMC)
+
+# nico-pxe with RHEL 10 Scout discovery OS (see docs/rhel10-scout.md).
+# Requires RHSM org ID and activation key (plain files, never build-args).
+# RHSM_ORG_FILE and RHSM_ACTIVATIONKEY_FILE are defined in the main Makefile
+# alongside docker-build-core (same credentials, same pattern).
+docker-build-pxe:
+	podman build \
+		--secret id=rhsm_org,src=$(RHSM_ORG_FILE) \
+		--secret id=rhsm_activationkey,src=$(RHSM_ACTIVATIONKEY_FILE) \
+		-t $(IMAGE_REGISTRY)/nico-pxe:$(IMAGE_TAG) \
+		-f $(DOCKERFILE_DIR)/Dockerfile.nico-pxe hack/pxe-rhel10
+
+docker-push-pxe:
+	podman push $(IMAGE_REGISTRY)/nico-pxe:$(IMAGE_TAG)

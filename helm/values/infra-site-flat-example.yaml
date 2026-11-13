@@ -12,11 +12,16 @@ metallb:
   # Range (not a single /32): one LB IP per service — see nico-core-example.yaml,
   # where each service (nico-api, nico-pxe, unbound, nico-dhcp) requests its own
   # IP from this range via loadBalancerIP.
-  addresses:
-    - 10.0.0.12-10.0.0.19
+  mode: l2
+  addressPools:
+    - name: nico-dataplane-vip
+      addresses:
+        - 10.0.0.12-10.0.0.19
+      autoAssign: false
   # FLAT: leave empty so MetalLB advertises on all node interfaces (the primary
   # network). Do NOT list a NIC here unless the VIPs are on a separate VLAN.
-  interfaces: []
+  l2:
+    interfaces: []
 
 # No static dataplane NIC on a FLAT network — the VIPs are reachable on the
 # primary network the nodes already have.

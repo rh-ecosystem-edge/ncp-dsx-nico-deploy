@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Placeholder for the /opt/forge/ directory in the RHEL 10 Scout rootfs.
+# The forge-scout binary is injected here at Docker build time via:
+#   COPY --from=rhel-builder /forge-scout \
+#        pxe/mkosi.profiles/scout-rhel10-oss-x86_64/mkosi.extra/opt/forge/forge-scout
+# before mkosi runs. This .gitkeep ensures the directory is tracked in git.

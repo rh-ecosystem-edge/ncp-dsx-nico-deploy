@@ -13,8 +13,8 @@ SPDX-License-Identifier: Apache-2.0
 
 NICo's site/Core provisioning services must be reachable by the BlueField-3 DPU
 and the host it provisions, on a dedicated provisioning VLAN, via **MetalLB
-LoadBalancer services** on that VLAN. Each exposed service gets its **own** LB IP
-(not one shared VIP):
+LoadBalancer services** on that VLAN. This example shares one VIP across services
+that use different ports:
 
 | Service | Port | Role |
 |---|---|---|
@@ -44,7 +44,7 @@ instead. It is simpler and avoids the NNCP and the OVN local-gateway tweak:
 
 | | Dedicated VLAN (default) | FLAT mode |
 |---|---|---|
-| L2 advertisement | pinned to the NIC (`metallb.interfaces`) | all interfaces (`interfaces: []`) |
+| L2 advertisement | pinned to the NIC (`metallb.l2.interfaces`) | all interfaces (`metallb.l2.interfaces: []`) |
 | Static NIC IP | NNCP (`nodeNetwork.enabled: true`) | not needed (`nodeNetwork.enabled: false`) |
 | OVN local-gateway | required | not needed (VIPs are on `br-ex`) |
 | VIPs | one shared VIP + `allow-shared-ip` | one VIP per service (or shared — your choice) |
@@ -155,8 +155,18 @@ DATAPLANE_NODE_IP=10.6.145.2    # static IP for the node NIC
 ```
 
 **IP configuration is in `deploy.env` only** — the example overlay has empty
-placeholders. When `DATAPLANE_VIP` is set, the make targets automatically enable
-MetalLB and NMState operators. (No separate prereqs or infra-site override files needed.)
+placeholders. Choose the MetalLB provider before deploying:
+
+- **NICo-only cluster (default):** leave `METALLB_MODE` unset, or set
+  `METALLB_MODE=standalone`. NICo installs MetalLB in `metallb-system`.
+- **DPF/HCP cluster:** set `METALLB_MODE=dpf`. DPF must already have installed
+  MetalLB and created its `MetalLB` resource in `openshift-operators`.
+  NICo waits for those CRDs, then creates only its own pool and advertisement;
+  it does not install another operator or singleton resource.
+
+When `DATAPLANE_VIP` is set, the make targets enable the selected MetalLB path
+and NMState. Do not use `METALLB_MODE=dpf` unless the DPF MetalLB CRD is already
+available; otherwise the prerequisite wait will time out.
 
 ## Deploy
 
@@ -169,8 +179,9 @@ make deploy-dataplane-vip
 
 (All `SITE` and `DATAPLANE_*` vars are read from `deploy.env`; no CLI args needed.)
 
-With no `deploy.env`, the deploy fails fast with clear errors. With `DATAPLANE_VIP`
-unset or empty, MetalLB/NMState stay disabled and the cluster runs without LoadBalancer VIPs.
+With no `deploy.env`, the deploy fails fast with clear errors. With
+`METALLB_MODE=dpf` and no `DATAPLANE_VIP`, the chart skips NICo MetalLB
+configuration and reuses DPF's installation.
 
 ## Verify
 

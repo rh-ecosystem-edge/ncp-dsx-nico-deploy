@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# E2E node default gateway -> FRR ToR (see docs/e2e-libvirt-openshift.md).
+#
+# THE load-bearing step of the production-faithful e2e (Phase C, Stage 4). Under
+# OCP OVN shared-gateway mode, Service DNAT fires for traffic ingressing br-ex,
+# but a VIP is only reachable from an OFF-CLUSTER, foreign-subnet client if OVN's
+# gateway router (GR_<node>) can RETURN to that client's subnet. GR_<node> learns
+# ONLY the node's DEFAULT gateway (+ connected routes) — so return traffic to a
+# provisioning-net client (192.168.253.0/24) works iff the node default gateway is
+# the routing fabric that also owns that segment: the FRR ToR (nico-tor libvirt
+# VM, net0 192.168.130.5, net1 192.168.253.1). See CLAUDE.md "Networking /
+# MetalLB" (return-path requirement) and the findingb spike result.
+#
+# In production this is automatic — the node is installed with the ToR/fabric as
+# its default gateway. The e2e SNO is installed against the libvirt NAT gateway
+# (192.168.130.1), so this NNCP repoints the node default route to the ToR
+# post-install. The ToR forwards the node's own outbound traffic upstream to the
+# libvirt NAT (its own `default via 192.168.130.1`), so internet/image-pull still
+# works; no NAT is needed on the ToR for provisioning traffic because the worker's
+# real 192.168.253.x address is routable end-to-end via the ToR.
+#
+# IMPORTANT: OVN derives GR_<node>'s default next-hop at gateway-init time and
+# does NOT re-read a runtime default-route change. Because this NNCP flips the gw
+# AFTER install, ovnkube-node must be restarted once so GR_<node> re-derives
+# 0.0.0.0/0 -> 192.168.130.5. `make deploy-e2e-net` does this (rollout restart +
+# wait). On a node reboot the persisted route is already the ToR, so GR converges
+# naturally with no extra step.
+#
+# oc/KUBECONFIG access is L2 on 192.168.130.0/24 (host -> .10 directly), so
+# repointing the default gateway does NOT cut API access; recovery if the NNCP
+# misapplies is `virsh console nico-sno` (qemu:///system) + nmcli.
+#
+# Applied by `make deploy-site E2E=1` (deploy-e2e-net), after the nmstate operator
+# and before Helm.
+---
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: node-default-gw-tor
+spec:
+  desiredState:
+    routes:
+      config:
+        # New default gateway = the FRR ToR (net0 on the machine segment).
+        - destination: 0.0.0.0/0
+          next-hop-address: 192.168.130.5
+          next-hop-interface: br-ex
+        # Drop the install-time default via the libvirt NAT gateway. Without this
+        # nmstate keeps both defaults and ECMP-balances, breaking the symmetric
+        # return OVN needs.
+        - destination: 0.0.0.0/0
+          next-hop-address: 192.168.130.1
+          next-hop-interface: br-ex
+          state: absent
